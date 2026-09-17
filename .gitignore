@@ -1,0 +1,11 @@
+node_modules
+dist
+.medusa
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+coverage
+*.tsbuildinfo
+archs/

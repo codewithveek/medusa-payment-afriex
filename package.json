@@ -1,0 +1,70 @@
+{
+  "name": "@afriex/medusa-payment-provider",
+  "version": "0.1.0",
+  "description": "Medusa v2 payment provider for Afriex collection methods — dedicated virtual accounts and pool accounts, reconciled by webhook.",
+  "author": "Afriex",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Afri-exchange/afriex-medusa-payment-provider"
+  },
+  "keywords": [
+    "medusa-plugin",
+    "medusa-v2",
+    "medusa-payment",
+    "afriex",
+    "payments",
+    "africa"
+  ],
+  "files": [
+    ".medusa/server"
+  ],
+  "exports": {
+    "./package.json": "./package.json",
+    "./providers/*": "./.medusa/server/src/providers/*/index.js",
+    "./.medusa/server/src/modules/*": "./.medusa/server/src/modules/*/index.js",
+    "./admin": {
+      "import": "./.medusa/server/src/admin/index.mjs",
+      "require": "./.medusa/server/src/admin/index.js",
+      "default": "./.medusa/server/src/admin/index.js"
+    },
+    "./*": "./.medusa/server/src/*.js"
+  },
+  "scripts": {
+    "build": "medusa plugin:build",
+    "dev": "medusa plugin:develop",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "medusa plugin:build"
+  },
+  "dependencies": {
+    "@afriex/sdk": "^4.0.0"
+  },
+  "devDependencies": {
+    "@medusajs/admin-sdk": "^2.12.0",
+    "@medusajs/admin-shared": "^2.12.0",
+    "@medusajs/cli": "^2.12.0",
+    "@medusajs/framework": "^2.12.0",
+    "@medusajs/icons": "^2.12.0",
+    "@medusajs/medusa": "^2.12.0",
+    "@medusajs/ui": "^4.0.0",
+    "@types/node": "^22.9.0",
+    "@types/react": "^18.3.2",
+    "react": "^18.3.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.5"
+  },
+  "peerDependencies": {
+    "@medusajs/admin-sdk": "^2.21.0",
+    "@medusajs/framework": "^2.21.0",
+    "@medusajs/medusa": "^2.21.0"
+  },
+  "engines": {
+    "node": ">=20.19"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
