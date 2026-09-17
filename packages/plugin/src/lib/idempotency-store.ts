@@ -59,8 +59,13 @@ function isUniqueViolation(error: unknown): boolean {
 
   // 23505 is Postgres' unique_violation; MikroORM surfaces it as a
   // UniqueConstraintViolationException whose message keeps the constraint name.
+  // Medusa's generated module service catches both and rethrows a MedusaError
+  // reading "... with event_id: <id>, already exists.", which keeps neither —
+  // so that phrasing has to be matched too or a redelivery escapes as a 400 and
+  // Afriex retries it forever. The only unique column on this table is
+  // `event_id`, so nothing else can produce it here.
   return (
     code === "23505" ||
-    /unique constraint|duplicate key/i.test(message)
+    /unique constraint|duplicate key|already exists/i.test(message)
   )
 }

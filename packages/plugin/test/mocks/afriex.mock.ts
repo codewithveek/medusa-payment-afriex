@@ -97,9 +97,16 @@ export function createMockContainer(
   const webhookModule = {
     createProcessedWebhooks: vi.fn(async ({ event_id }: { event_id: string }) => {
       if (processed.has(event_id)) {
-        throw Object.assign(new Error("duplicate key value violates unique constraint"), {
-          code: "23505",
-        })
+        // Medusa's generated module service swallows the Postgres unique
+        // violation and rethrows this instead — no `code`, no constraint name.
+        // The mock has to match, or the duplicate path is only ever tested
+        // against an error the plugin never actually sees.
+        throw Object.assign(
+          new Error(
+            `Afriex processed webhook with event_id: ${event_id}, already exists.`
+          ),
+          { type: "invalid_data" }
+        )
       }
       const record = { id: `pw_${processed.size + 1}`, event_id }
       processed.set(event_id, record)

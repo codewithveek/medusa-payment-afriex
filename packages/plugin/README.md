@@ -102,7 +102,8 @@ Register **one** URL in the Afriex dashboard:
 https://your-store.com/afriex/webhook
 ```
 
-Medusa's generic `/hooks/payment/pp_afriex_afriex` endpoint also works, but it
+Medusa's generic `/hooks/payment/afriex_afriex` endpoint also works (no `pp_`
+prefix — Medusa adds that itself when resolving the provider), but it
 skips this plugin's idempotency store and its amount-mismatch review. Register
 one or the other, never both.
 

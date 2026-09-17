@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Afri-exchange/afriex-medusa-payment-provider",
+    "url": "https://github.com/codewithveek/medusa-payment-afriex",
     "directory": "packages/plugin"
   },
   "keywords": [
@@ -40,7 +40,7 @@
     "prepublishOnly": "medusa plugin:build"
   },
   "dependencies": {
-    "@afriex/sdk": "^4.0.0"
+    "@afriex/sdk": "^4.1.0"
   },
   "devDependencies": {
     "@medusajs/admin-sdk": "^2.21.0",

@@ -15,7 +15,8 @@
     "typecheck": "turbo run typecheck",
     "plugin:build": "pnpm --filter medusa-payment-afriex run build",
     "plugin:dev": "pnpm --filter medusa-payment-afriex run dev",
-    "example:dev": "pnpm --filter @afriex/example-medusa-backend run dev",
+    "backend:dev": "pnpm --filter @afriex/example-medusa-backend run dev",
+    "storefront:dev": "pnpm --filter @afriex/example-storefront run dev",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "pnpm run build --filter \"./packages/*\" && changeset publish"

@@ -189,7 +189,10 @@ describe("Afriex webhook handling", () => {
     await processAfriexWebhook(asContainer(container), body, { "x-webhook-signature": "sig" })
 
     const [call] = container.paymentModule.getWebhookActionAndData.mock.calls[0]!
-    expect(call.provider).toBe("pp_afriex_afriex")
+    // Unprefixed: Medusa builds `pp_${provider}` before resolving it from the
+    // container, so passing the stored `pp_afriex_afriex` here would send it
+    // looking for `pp_pp_afriex_afriex`.
+    expect(call.provider).toBe("afriex_afriex")
     expect(call.payload.rawData).toBe(body)
     expect(call.payload.headers).toEqual({ "x-webhook-signature": "sig" })
     expect(container.paymentModule.retrievePaymentSession).toHaveBeenCalledWith(SESSION_ID)

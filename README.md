@@ -21,6 +21,7 @@ packages/
   plugin/            medusa-payment-afriex — the published npm package
 examples/
   medusa-backend/    a Medusa store wired to the plugin via workspace:*
+  storefront/        a React Router shop that walks a cart through the checkout
 ```
 
 Examples live outside `packages/` on purpose: they are private apps that consume
@@ -41,16 +42,32 @@ Scoped to a single workspace:
 ```bash
 pnpm --filter medusa-payment-afriex test
 pnpm plugin:dev       # medusa plugin:develop, rebuilds the plugin on change
-pnpm example:dev      # runs examples/medusa-backend against that build
+pnpm backend:dev      # runs examples/medusa-backend against that build
+pnpm storefront:dev   # runs examples/storefront against that backend
 ```
 
-The example depends on `"medusa-payment-afriex": "workspace:*"`, which
-pnpm links to the local package. Medusa resolves the plugin from its built
+The examples depend on `"medusa-payment-afriex": "workspace:*"`, which pnpm
+links to the local package. Medusa resolves the plugin from its built
 `.medusa/server` output, so the plugin has to be built — `pnpm plugin:dev` keeps
 that output fresh while you edit.
 
-See [`examples/medusa-backend/README.md`](./examples/medusa-backend/README.md)
-for database setup, seeding and webhook tunnelling.
+Note that `medusa develop` watches the backend's own `src/`, not the linked
+plugin's build output, so restart the backend after a plugin rebuild.
+
+## Seeing it work
+
+Three terminals, in this order:
+
+```bash
+pnpm plugin:dev                          # keeps the plugin build fresh
+cd examples/medusa-backend && pnpm dev    # after db:up, db:migrate, seed
+cd examples/storefront    && pnpm dev     # http://localhost:8000
+```
+
+[`examples/medusa-backend/README.md`](./examples/medusa-backend/README.md) covers
+database setup, seeding and webhook tunnelling;
+[`examples/storefront/README.md`](./examples/storefront/README.md) covers the
+checkout the shopper walks through.
 
 ## Releasing
 

@@ -26,7 +26,7 @@ cd examples/medusa-backend
 cp .env.template .env    # fill in the AFRIEX_* values
 pnpm db:up               # Postgres via docker compose (skip if you have your own)
 pnpm db:migrate          # also creates the plugin's afriex_processed_webhook table
-pnpm seed                # NGN region listing the Afriex provider + publishable key
+pnpm seed                # NGN region listing the provider, a product, a key
 pnpm dev
 ```
 
@@ -34,6 +34,17 @@ The admin is then at http://localhost:9000/app. Create your first user with:
 
 ```bash
 npx medusa user -e admin@example.com -p supersecret
+```
+
+## After changing the plugin
+
+`medusa develop` watches this app's `src/`, not the linked plugin's build
+output — rebuilding the plugin does not reload the running server. Rebuild, then
+restart:
+
+```bash
+pnpm plugin:build   # from the repo root
+# then restart this app
 ```
 
 ## Receiving webhooks locally
@@ -50,9 +61,23 @@ Register that path **or** Medusa's generic
 `/hooks/payment/pp_afriex_afriex`, never both — the generic one bypasses the
 plugin's idempotency store and its amount-mismatch review.
 
-## What the seed does not cover
+## What the seed covers
 
-It creates a region, a sales channel and a publishable key — enough to place a
-payment session against the provider. It does not seed products, shipping
-options or tax regions. Run the stock Medusa starter seed alongside it if you
-want a full checkout.
+Enough for one cart to reach the Afriex payment step and be placed: an NGN
+region listing `pp_afriex_afriex`, a sales channel, a stock location, one
+product with stock, a flat-rate shipping option, and a publishable key linked to
+that sales channel.
+
+It prints that key at the end — use it, not the "Default Sales Channel" key
+Medusa creates on its own first boot. Only the seeded key is linked to the
+channel the product is published in, so with the other one the product list
+comes back empty.
+
+It stops there: no catalogue to browse, no tax rates beyond the system
+provider, no customer accounts. Run the stock Medusa starter seed alongside it
+if you want a fuller store.
+
+## Storefront
+
+[`../storefront`](../storefront) is a React Router app that walks a cart through
+this backend's checkout and shows the shopper's side of the Afriex flow.

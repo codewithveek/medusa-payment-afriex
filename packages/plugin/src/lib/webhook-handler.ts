@@ -82,7 +82,10 @@ export async function processAfriexWebhook(
   }
 
   const verified = await paymentModule.getWebhookActionAndData({
-    provider: session.provider_id,
+    // Medusa prepends `pp_` before resolving the provider, so the already
+    // fully-qualified `session.provider_id` has to have it stripped or the
+    // lookup goes looking for `pp_pp_afriex_afriex` and throws.
+    provider: session.provider_id.replace(/^pp_/, ""),
     payload: { data: parsed as unknown as Record<string, unknown>, rawData: rawString, headers },
   })
 

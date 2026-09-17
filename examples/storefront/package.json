@@ -1,0 +1,35 @@
+{
+  "name": "@afriex/example-storefront",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "React Router storefront demonstrating the Afriex bank-transfer checkout.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "build": "react-router build",
+    "dev": "react-router dev",
+    "start": "react-router-serve ./build/server/index.js",
+    "typecheck": "react-router typegen && tsc --noEmit"
+  },
+  "dependencies": {
+    "@medusajs/js-sdk": "2.21.0",
+    "@react-router/node": "^8.4.0",
+    "@react-router/serve": "^8.4.0",
+    "isbot": "^5.2.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router": "^8.4.0"
+  },
+  "devDependencies": {
+    "@react-router/dev": "^8.4.0",
+    "@types/node": "^22.9.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.0",
+    "vite-tsconfig-paths": "^5.1.4"
+  }
+}
