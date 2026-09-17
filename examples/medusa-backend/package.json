@@ -1,0 +1,41 @@
+{
+  "name": "@afriex/example-medusa-backend",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Runnable Medusa v2 store wired to the Afriex payment provider.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "build": "medusa build",
+    "dev": "medusa develop",
+    "start": "medusa start",
+    "seed": "medusa exec ./src/scripts/seed.ts",
+    "db:migrate": "medusa db:migrate",
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "medusa-payment-afriex": "workspace:*",
+    "@medusajs/admin-sdk": "2.21.0",
+    "@medusajs/cli": "2.21.0",
+    "@medusajs/framework": "2.21.0",
+    "@medusajs/medusa": "2.21.0",
+    "@mikro-orm/core": "6.4.3",
+    "@mikro-orm/knex": "6.4.3",
+    "@mikro-orm/migrations": "6.4.3",
+    "@mikro-orm/postgresql": "6.4.3",
+    "awilix": "^8.0.1",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@medusajs/test-utils": "2.21.0",
+    "@types/node": "^22.9.0",
+    "@types/react": "^18.3.2",
+    "react": "^18.3.1",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  }
+}

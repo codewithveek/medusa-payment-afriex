@@ -1,0 +1,10 @@
+packages:
+  - "packages/*"
+  - "examples/*"
+
+onlyBuiltDependencies:
+  - "@medusajs/telemetry"
+  - "@swc/core"
+  - esbuild
+  - sharp
+  - turbo

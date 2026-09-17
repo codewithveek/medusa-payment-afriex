@@ -1,10 +1,12 @@
 node_modules
 dist
 .medusa
+.cache
+.turbo
 *.log
 .env
 .env.*
-!.env.example
+!.env.template
 .DS_Store
 coverage
 *.tsbuildinfo

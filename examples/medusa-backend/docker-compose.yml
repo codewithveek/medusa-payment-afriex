@@ -1,0 +1,23 @@
+# Postgres for the example store. `pnpm db:up` starts it, `pnpm db:down` stops
+# it. Matches the DATABASE_URL in .env.template.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: medusa-afriex-example-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: medusa-afriex-example
+    ports:
+      - "5432:5432"
+    volumes:
+      - afriex-example-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  afriex-example-pgdata:
