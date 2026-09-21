@@ -65,3 +65,13 @@ export function isTerminalFailure(afriexStatus: string | undefined): boolean {
     afriexStatus === "CANCELLED"
   )
 }
+
+/**
+ * True for a recorded status that money has already moved behind. Once a
+ * session reaches one of these, a later or out-of-order progress event must
+ * not overwrite it: a PROCESSING that lands after SUCCESS would otherwise make
+ * `authorizePayment` defer a deposit that has in fact settled.
+ */
+export function isFinalRecordedStatus(afriexStatus: string | undefined): boolean {
+  return afriexStatus === "SUCCESS" || afriexStatus === AFRIEX_AMOUNT_MISMATCH
+}

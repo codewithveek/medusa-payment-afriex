@@ -1,13 +1,15 @@
+import { generateKeyPairSync } from "node:crypto"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { InitiatePaymentInput } from "@medusajs/framework/types"
 import { buildTransactionPayload, SESSION_ID } from "./mocks/afriex.mock"
 
 const sdk = vi.hoisted(() => ({
-  customers: { create: vi.fn() },
+  customers: { create: vi.fn(), delete: vi.fn() },
   paymentMethods: {
     createVirtualAccount: vi.fn(),
     listPoolAccounts: vi.fn(),
     get: vi.fn(),
+    delete: vi.fn(),
   },
   webhooks: { verifyAndParse: vi.fn() },
 }))
@@ -18,10 +20,15 @@ vi.mock("../src/lib/afriex", () => ({
 
 import AfriexPaymentProviderService from "../src/providers/afriex-payment/service"
 
+const PUBLIC_KEY = generateKeyPairSync("ec", { namedCurve: "P-256" }).publicKey.export({
+  type: "spki",
+  format: "pem",
+}) as string
+
 const OPTIONS = {
   apiKey: "sk_test",
   environment: "staging" as const,
-  webhookPublicKey: "pub_key",
+  webhookPublicKey: PUBLIC_KEY,
 }
 
 const logger = {
@@ -46,6 +53,7 @@ const VIRTUAL_ACCOUNT = {
   accountNumber: "0123456789",
   accountName: "Afriex / Order",
   reference: SESSION_ID,
+  expiresInMinutes: 30,
   institution: { institutionName: "Providus Bank" },
 }
 
@@ -84,28 +92,44 @@ describe("AfriexPaymentProviderService", () => {
     sdk.customers.create.mockResolvedValue({ customerId: "cus_1" })
     sdk.paymentMethods.createVirtualAccount.mockResolvedValue(VIRTUAL_ACCOUNT)
     sdk.paymentMethods.listPoolAccounts.mockResolvedValue(POOL_ACCOUNT)
+    sdk.paymentMethods.delete.mockResolvedValue(undefined)
   })
 
   describe("validateOptions", () => {
+    it("accepts a complete registration", () => {
+      expect(() => AfriexPaymentProviderService.validateOptions(OPTIONS)).not.toThrow()
+    })
+
     it("rejects a registration with no API key", () => {
       expect(() =>
-        AfriexPaymentProviderService.validateOptions({ webhookPublicKey: "k" })
+        AfriexPaymentProviderService.validateOptions({ ...OPTIONS, apiKey: undefined })
       ).toThrow(/apiKey/)
     })
 
     it("rejects a registration with no webhook public key, which would make every event unverifiable", () => {
       expect(() =>
-        AfriexPaymentProviderService.validateOptions({ apiKey: "k" })
+        AfriexPaymentProviderService.validateOptions({ ...OPTIONS, webhookPublicKey: undefined })
       ).toThrow(/webhookPublicKey/)
+    })
+
+    it("rejects a public key the SDK could not verify with, instead of letting every webhook fail as a 401", () => {
+      expect(() =>
+        AfriexPaymentProviderService.validateOptions({ ...OPTIONS, webhookPublicKey: "not-a-pem" })
+      ).toThrow(/not a valid public key/)
+    })
+
+    it("requires the environment to be stated, since the SDK would otherwise default to production", () => {
+      expect(() =>
+        AfriexPaymentProviderService.validateOptions({ ...OPTIONS, environment: undefined })
+      ).toThrow(/environment/)
+      expect(() =>
+        AfriexPaymentProviderService.validateOptions({ ...OPTIONS, environment: "sandbox" })
+      ).toThrow(/environment/)
     })
 
     it("rejects an unknown collection method", () => {
       expect(() =>
-        AfriexPaymentProviderService.validateOptions({
-          apiKey: "k",
-          webhookPublicKey: "k",
-          collectionMethod: "card",
-        })
+        AfriexPaymentProviderService.validateOptions({ ...OPTIONS, collectionMethod: "card" })
       ).toThrow(/collectionMethod/)
     })
   })
@@ -127,11 +151,21 @@ describe("AfriexPaymentProviderService", () => {
       expect(result.status).toBe("pending")
       expect(result.data).toMatchObject({
         reference: SESSION_ID,
+        afriexCustomerId: "cus_1",
         expectedAmount: "25000",
         expectedCurrency: "NGN",
         currentStatus: "PENDING",
         accountNumber: "0123456789",
       })
+    })
+
+    it("tells the shopper how long the account lasts when Afriex says so", async () => {
+      const service = buildService("dedicated")
+
+      const result = await service.initiatePayment(initiateInput())
+
+      expect((result.data as any).instructions.expiresInMinutes).toBe(30)
+      expect((result.data as any).instructions.expiresNote).toMatch(/30 minutes/)
     })
 
     it("refuses to initiate without a session id rather than minting an unmatchable account", async () => {
@@ -143,15 +177,17 @@ describe("AfriexPaymentProviderService", () => {
       expect(sdk.paymentMethods.createVirtualAccount).not.toHaveBeenCalled()
     })
 
-    it("surfaces an Afriex failure instead of returning a session that can never be paid", async () => {
+    it("surfaces an Afriex failure as a generic error, keeping the account-level detail in the log", async () => {
       const service = buildService()
       sdk.paymentMethods.createVirtualAccount.mockRejectedValueOnce(
-        new Error("country not enabled")
+        new Error("country not enabled for this merchant")
       )
 
       await expect(service.initiatePayment(initiateInput())).rejects.toThrow(
-        /country not enabled/
+        /initiation failed/
       )
+      await expect(service.initiatePayment(initiateInput())).resolves.toBeDefined()
+      expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/country not enabled/))
     })
 
     it("reuses the Afriex customer Medusa already holds instead of registering a duplicate", async () => {
@@ -170,6 +206,22 @@ describe("AfriexPaymentProviderService", () => {
       expect(sdk.paymentMethods.createVirtualAccount).toHaveBeenCalledWith(
         expect.objectContaining({ customerId: "cus_existing" })
       )
+    })
+
+    it("mints a business-owned account for a shopper Afriex could not register, rather than sending empty contact details", async () => {
+      const service = buildService("dedicated")
+
+      await service.initiatePayment(
+        initiateInput({
+          context: {
+            customer: { id: "cus_guest", email: "guest@example.com", phone: null },
+          },
+        } as Partial<InitiatePaymentInput>)
+      )
+
+      expect(sdk.customers.create).not.toHaveBeenCalled()
+      const [params] = sdk.paymentMethods.createVirtualAccount.mock.calls[0]!
+      expect(params).not.toHaveProperty("customerId")
     })
 
     it("uses the standing pool account without registering a customer, and tells the shopper to quote the reference", async () => {
@@ -196,8 +248,50 @@ describe("AfriexPaymentProviderService", () => {
       })
 
       await expect(service.initiatePayment(initiateInput())).rejects.toThrow(
-        /account number/
+        /initiation failed/
       )
+      expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/account number/))
+    })
+  })
+
+  describe("account holders", () => {
+    it("registers the shopper with Afriex once so later checkouts reuse the customer", async () => {
+      const service = buildService()
+
+      const result = await service.createAccountHolder({
+        context: { customer: initiateInput().context!.customer },
+      })
+
+      expect(sdk.customers.create).toHaveBeenCalledWith(
+        expect.objectContaining({ email: "ada@example.com", phone: "+2348012345678", countryCode: "NG" })
+      )
+      expect(result).toEqual({ id: "cus_1", data: { customerId: "cus_1" } })
+    })
+
+    it("creates nothing for a shopper without the contact details Afriex requires", async () => {
+      const service = buildService()
+
+      const result = await service.createAccountHolder({
+        context: { customer: { id: "cus_guest", email: "guest@example.com" } },
+      })
+
+      expect(sdk.customers.create).not.toHaveBeenCalled()
+      expect(result).toEqual({})
+    })
+
+    it("removes the Afriex customer when Medusa removes the account holder, and tolerates failure", async () => {
+      const service = buildService()
+      sdk.customers.delete.mockRejectedValueOnce(new Error("has transactions"))
+
+      await expect(
+        service.deleteAccountHolder({
+          data: {},
+          context: { account_holder: { external_id: "cus_1" } },
+        })
+      ).resolves.toBeDefined()
+
+      expect(sdk.customers.delete).toHaveBeenCalledWith("cus_1")
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/has transactions/))
     })
   })
 
@@ -251,10 +345,11 @@ describe("AfriexPaymentProviderService", () => {
       // The webhook handler writes status onto the session through this path.
       // Minting a new account here would move the goalposts mid-payment.
       expect(sdk.paymentMethods.createVirtualAccount).not.toHaveBeenCalled()
+      expect(sdk.paymentMethods.delete).not.toHaveBeenCalled()
       expect((result.data as any).currentStatus).toBe("SUCCESS")
     })
 
-    it("mints a new dedicated account when the cart total changes, since the old one is bound to the old amount", async () => {
+    it("mints a new dedicated account when the cart total changes and closes the old one", async () => {
       const service = buildService("dedicated")
 
       const result = await service.updatePayment({
@@ -262,6 +357,7 @@ describe("AfriexPaymentProviderService", () => {
         currency_code: "ngn",
         data: {
           afriexPaymentMethodId: "pm_virtual_1",
+          collectionMethod: "dedicated",
           reference: SESSION_ID,
           expectedAmount: "25000",
           expectedCurrency: "NGN",
@@ -273,7 +369,52 @@ describe("AfriexPaymentProviderService", () => {
       expect(sdk.paymentMethods.createVirtualAccount).toHaveBeenCalledWith(
         expect.objectContaining({ amount: 30000, reference: SESSION_ID })
       )
+      expect(sdk.paymentMethods.delete).toHaveBeenCalledWith("pm_virtual_1")
       expect((result.data as any).expectedAmount).toBe("30000")
+    })
+
+    it("reuses the customer the previous account was minted for instead of registering another", async () => {
+      const service = buildService("dedicated")
+
+      await service.updatePayment({
+        amount: 30000,
+        currency_code: "ngn",
+        data: {
+          afriexPaymentMethodId: "pm_virtual_1",
+          afriexCustomerId: "cus_previous",
+          collectionMethod: "dedicated",
+          reference: SESSION_ID,
+          expectedAmount: "25000",
+          expectedCurrency: "NGN",
+          currentStatus: "PENDING",
+        },
+      } as any)
+
+      expect(sdk.customers.create).not.toHaveBeenCalled()
+      expect(sdk.paymentMethods.createVirtualAccount).toHaveBeenCalledWith(
+        expect.objectContaining({ customerId: "cus_previous" })
+      )
+    })
+
+    it("refuses to change the amount once a deposit has been recorded against the old one", async () => {
+      const service = buildService("dedicated")
+
+      for (const currentStatus of ["SUCCESS", "AMOUNT_MISMATCH"]) {
+        await expect(
+          service.updatePayment({
+            amount: 30000,
+            currency_code: "ngn",
+            data: {
+              afriexPaymentMethodId: "pm_virtual_1",
+              reference: SESSION_ID,
+              expectedAmount: "25000",
+              expectedCurrency: "NGN",
+              currentStatus,
+            },
+          } as any)
+        ).rejects.toThrow(/cannot change after a deposit/)
+      }
+      expect(sdk.paymentMethods.createVirtualAccount).not.toHaveBeenCalled()
     })
 
     it("only updates the expected amount for a pool account, which is not bound to one", async () => {
@@ -291,6 +432,43 @@ describe("AfriexPaymentProviderService", () => {
 
       expect(sdk.paymentMethods.createVirtualAccount).not.toHaveBeenCalled()
       expect((result.data as any).expectedAmount).toBe("30000")
+    })
+  })
+
+  describe("closing accounts", () => {
+    const dedicated = {
+      afriexPaymentMethodId: "pm_virtual_1",
+      collectionMethod: "dedicated",
+    }
+
+    it("closes a dedicated account when its session is cancelled or deleted, so a late transfer cannot orphan itself", async () => {
+      const service = buildService("dedicated")
+
+      await service.cancelPayment({ data: dedicated } as any)
+      await service.deletePayment({ data: dedicated } as any)
+
+      expect(sdk.paymentMethods.delete).toHaveBeenCalledTimes(2)
+      expect(sdk.paymentMethods.delete).toHaveBeenCalledWith("pm_virtual_1")
+    })
+
+    it("leaves a shared pool account alone", async () => {
+      const service = buildService("pool")
+
+      await service.deletePayment({
+        data: { afriexPaymentMethodId: "pm_pool_1", collectionMethod: "pool" },
+      } as any)
+
+      expect(sdk.paymentMethods.delete).not.toHaveBeenCalled()
+    })
+
+    it("does not let a failure to close the account block Medusa's own cleanup", async () => {
+      const service = buildService("dedicated")
+      sdk.paymentMethods.delete.mockRejectedValueOnce(new Error("already expired"))
+
+      await expect(service.deletePayment({ data: dedicated } as any)).resolves.toEqual({
+        data: dedicated,
+      })
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/already expired/))
     })
   })
 

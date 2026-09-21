@@ -1,7 +1,11 @@
 import { vi } from "vitest"
 import type { TransactionWebhookPayload } from "@afriex/sdk"
+import { MedusaError } from "@medusajs/framework/utils"
 
 export const SESSION_ID = "payses_01HTEST"
+export const PROVIDER_ID = "pp_afriex_afriex"
+export const PAYMENT_COLLECTION_ID = "paycol_01HTEST"
+export const CART_ID = "cart_01HTEST"
 
 export function buildTransactionPayload(
   overrides: Partial<TransactionWebhookPayload["data"]> = {},
@@ -48,22 +52,34 @@ export function createMockContainer(
     sessionAmount?: number
     sessionCurrency?: string
     sessionMissing?: boolean
+    sessionData?: Record<string, unknown>
+    sessionStatus?: string
     signatureValid?: boolean
+    /** Simulates the workflow completing the cart (default) or leaving it uncompleted. */
+    cartCompletes?: boolean
+    /** Simulates a payment collection with no cart behind it. */
+    hasCart?: boolean
   } = {}
 ) {
   const {
     sessionAmount = 25000,
     sessionCurrency = "ngn",
     sessionMissing = false,
+    sessionData = {},
+    sessionStatus = "pending",
     signatureValid = true,
+    cartCompletes = true,
+    hasCart = true,
   } = options
 
-  const session = {
+  const session: Record<string, any> = {
     id: SESSION_ID,
-    provider_id: "pp_afriex_afriex",
+    provider_id: PROVIDER_ID,
+    payment_collection_id: PAYMENT_COLLECTION_ID,
     amount: sessionAmount,
     currency_code: sessionCurrency,
-    status: "pending",
+    status: sessionStatus,
+    payment: undefined as undefined | { id: string },
     data: {
       afriexPaymentMethodId: "pm_virtual_1",
       collectionMethod: "dedicated",
@@ -72,22 +88,57 @@ export function createMockContainer(
       expectedAmount: String(sessionAmount),
       expectedCurrency: sessionCurrency.toUpperCase(),
       currentStatus: "PENDING",
+      ...sessionData,
     },
   }
+
+  let orderExists = false
 
   const paymentModule = {
     retrievePaymentSession: vi.fn(async (_id: string) => {
       if (sessionMissing) {
-        throw new Error("Payment session not found")
+        throw new MedusaError(MedusaError.Types.NOT_FOUND, "Payment session not found")
       }
       return session
     }),
-    updatePaymentSession: vi.fn(async (_update: UpdateCall) => session),
+    listPaymentSessions: vi.fn(async () => (sessionMissing ? [] : [session])),
+    listPaymentProviders: vi.fn(async () => [
+      { id: "pp_stripe_stripe" },
+      { id: PROVIDER_ID },
+    ]),
+    updatePaymentSession: vi.fn(async (update: UpdateCall) => {
+      session.data = update.data
+      if (update.status) {
+        session.status = update.status
+      }
+      return session
+    }),
     getWebhookActionAndData: vi.fn(async (_event: VerifyCall) =>
       signatureValid
         ? { action: "captured", data: { session_id: SESSION_ID, amount: 25000 } }
         : { action: "not_supported" }
     ),
+  }
+
+  /** What the mocked workflow does when it runs: creates the payment and, by default, the order. */
+  const completeWorkflow = () => {
+    session.payment = { id: "pay_1" }
+    session.status = "authorized"
+    if (cartCompletes) {
+      orderExists = true
+    }
+  }
+
+  const query = {
+    graph: vi.fn(async ({ entity }: { entity: string }) => {
+      if (entity === "cart_payment_collection") {
+        return { data: hasCart ? [{ cart_id: CART_ID }] : [] }
+      }
+      if (entity === "order_cart") {
+        return { data: orderExists ? [{ order_id: "order_1" }] : [] }
+      }
+      return { data: [] }
+    }),
   }
 
   // Stands in for the plugin's own table: a Map keyed by event_id, with the
@@ -136,14 +187,17 @@ export function createMockContainer(
     payment: paymentModule,
     afriex_webhook: webhookModule,
     logger,
+    query,
   }
 
   return {
     resolve: vi.fn((key: string) => registry[key]),
     paymentModule,
     webhookModule,
+    query,
     logger,
     session,
     processed,
+    completeWorkflow,
   }
 }

@@ -16,11 +16,15 @@ export type AfriexProviderOptions = {
  */
 export type AfriexCollectionAccount = {
   paymentMethodId: string
+  /** Afriex customer the account was minted for; absent when it is business-owned. */
+  customerId?: string
   accountNumber: string
   accountName?: string
   institutionName?: string
   /** What the customer must quote on the transfer, and what the webhook is matched against. */
   reference: string
+  /** Minutes until a dynamic virtual account stops accepting deposits, when Afriex reports it. */
+  expiresInMinutes?: number
 }
 
 export type AfriexPaymentInstructions = {
@@ -30,6 +34,19 @@ export type AfriexPaymentInstructions = {
   reference?: string
   note: string
   expiresNote?: string
+  expiresInMinutes?: number
+}
+
+/**
+ * A settled deposit other than the one that paid the session: a second
+ * transfer after capture, or an earlier mismatched one that a later correct
+ * transfer superseded. Each is money the merchant holds and must refund.
+ */
+export type AfriexExtraDeposit = {
+  transactionId: string
+  amount: string
+  currency?: string
+  receivedAt: string
 }
 
 /**
@@ -40,6 +57,8 @@ export type AfriexPaymentInstructions = {
  */
 export type AfriexSessionData = {
   afriexPaymentMethodId: string
+  /** Afriex customer the collection account belongs to; absent for business-owned accounts. */
+  afriexCustomerId?: string
   collectionMethod: AfriexCollectionMethod
   accountNumber: string
   accountName?: string
@@ -51,5 +70,7 @@ export type AfriexSessionData = {
   receivedAmount?: string
   receivedCurrency?: string
   afriexTransactionId?: string
+  /** Settled deposits beyond the one that paid the session. Each needs a refund. */
+  extraDeposits?: AfriexExtraDeposit[]
   instructions: AfriexPaymentInstructions
 }

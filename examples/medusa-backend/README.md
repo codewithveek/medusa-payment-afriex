@@ -57,9 +57,9 @@ ngrok http 9000
 # register https://<subdomain>.ngrok.app/afriex/webhook
 ```
 
-Register that path **or** Medusa's generic
-`/hooks/payment/pp_afriex_afriex`, never both — the generic one bypasses the
-plugin's idempotency store and its amount-mismatch review.
+Register that path only. Medusa's generic `/hooks/payment/afriex_afriex`
+endpoint verifies the event and then goes nowhere for this provider — capture is
+gated on a status that only the plugin's own route writes.
 
 ## What the seed covers
 

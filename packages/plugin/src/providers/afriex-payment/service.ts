@@ -1,3 +1,4 @@
+import { createPublicKey } from "node:crypto"
 import {
   AbstractPaymentProvider,
   BigNumber,
@@ -11,6 +12,10 @@ import type {
   CancelPaymentOutput,
   CapturePaymentInput,
   CapturePaymentOutput,
+  CreateAccountHolderInput,
+  CreateAccountHolderOutput,
+  DeleteAccountHolderInput,
+  DeleteAccountHolderOutput,
   DeletePaymentInput,
   DeletePaymentOutput,
   GetPaymentStatusInput,
@@ -33,7 +38,10 @@ import { createAfriexSdk } from "../../lib/afriex"
 import { amountsEqual, toAmountNumber, toAmountString } from "../../lib/amounts"
 import { buildPaymentInstructions } from "../../lib/build-instructions"
 import { AFRIEX_PROVIDER_IDENTIFIER } from "../../lib/constants"
-import { mapAfriexStatusToMedusaStatus } from "../../lib/map-status"
+import {
+  isFinalRecordedStatus,
+  mapAfriexStatusToMedusaStatus,
+} from "../../lib/map-status"
 import type {
   AfriexCollectionAccount,
   AfriexProviderOptions,
@@ -45,6 +53,8 @@ type InjectedDependencies = {
   logger: Logger
 }
 
+const ENVIRONMENTS = ["staging", "production"] as const
+
 class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProviderOptions> {
   static identifier = AFRIEX_PROVIDER_IDENTIFIER
 
@@ -53,13 +63,22 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
   protected readonly afriex_: AfriexSDK
 
   static validateOptions(options: Record<string, unknown>): void {
-    for (const required of ["apiKey", "webhookPublicKey"]) {
+    for (const required of ["apiKey", "webhookPublicKey", "environment"]) {
       if (!options[required]) {
         throw new MedusaError(
           MedusaError.Types.INVALID_ARGUMENT,
           `Afriex payment provider: \`${required}\` is required in medusa-config.ts.`
         )
       }
+    }
+
+    // The SDK silently falls back to production when this is missing or
+    // misspelled. The target environment has to be an explicit decision.
+    if (!ENVIRONMENTS.includes(options.environment as (typeof ENVIRONMENTS)[number])) {
+      throw new MedusaError(
+        MedusaError.Types.INVALID_ARGUMENT,
+        `Afriex payment provider: \`environment\` must be "staging" or "production".`
+      )
     }
 
     if (
@@ -70,6 +89,18 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
       throw new MedusaError(
         MedusaError.Types.INVALID_ARGUMENT,
         `Afriex payment provider: \`collectionMethod\` must be "dedicated" or "pool".`
+      )
+    }
+
+    // The SDK swallows a key it cannot parse and reports every signature as
+    // invalid, which would surface only as Afriex retrying against a 401.
+    // Fail at boot instead, where the operator is looking.
+    try {
+      createPublicKey(options.webhookPublicKey as string)
+    } catch {
+      throw new MedusaError(
+        MedusaError.Types.INVALID_ARGUMENT,
+        "Afriex payment provider: `webhookPublicKey` is not a valid public key. Paste the PEM exactly as shown in the Afriex dashboard."
       )
     }
   }
@@ -122,6 +153,7 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
 
       const data: AfriexSessionData = {
         afriexPaymentMethodId: account.paymentMethodId,
+        afriexCustomerId: account.customerId,
         collectionMethod: this.collectionMethod,
         accountNumber: account.accountNumber,
         accountName: account.accountName,
@@ -140,7 +172,9 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
       }
     } catch (error) {
       // Fail loudly. A session that looks valid but can never be paid is worse
-      // than a checkout that visibly refuses to proceed.
+      // than a checkout that visibly refuses to proceed. The upstream detail
+      // goes to the log, not to the shopper: Afriex error text describes the
+      // merchant's account, not anything the customer can act on.
       this.logger_.error(
         `Afriex payment initiation failed for session ${sessionId}: ${
           (error as Error).message
@@ -149,7 +183,7 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
 
       throw new MedusaError(
         MedusaError.Types.UNEXPECTED_STATE,
-        `Afriex payment initiation failed: ${(error as Error).message}`
+        "Afriex payment initiation failed. Please try again or choose another payment method."
       )
     }
   }
@@ -199,14 +233,18 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
   }
 
   /**
-   * Dedicated virtual accounts expire on their own and pool accounts are shared
-   * infrastructure, so an abandoned cart leaves nothing to cancel at Afriex.
+   * A dedicated virtual account outlives the session it was minted for unless
+   * it is closed, and a shopper who pays into it afterwards produces a deposit
+   * no session can claim. So it is closed here. Pool accounts are shared
+   * infrastructure and are left alone.
    */
   async cancelPayment(input: CancelPaymentInput): Promise<CancelPaymentOutput> {
+    await this.closeDedicatedAccount(input.data as AfriexSessionData | undefined)
     return { data: input.data }
   }
 
   async deletePayment(input: DeletePaymentInput): Promise<DeletePaymentOutput> {
+    await this.closeDedicatedAccount(input.data as AfriexSessionData | undefined)
     return { data: input.data }
   }
 
@@ -247,7 +285,20 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
       amountsEqual(data.expectedAmount, amount) &&
       data.expectedCurrency === currency
 
-    if (unchanged || this.collectionMethod === "pool") {
+    if (unchanged) {
+      return { data: input.data }
+    }
+
+    // Money has already moved against the old total. Carrying the settled
+    // status onto a new amount would let Medusa mark the larger order paid.
+    if (isFinalRecordedStatus(data.currentStatus)) {
+      throw new MedusaError(
+        MedusaError.Types.NOT_ALLOWED,
+        `Afriex payment provider: the amount cannot change after a deposit has been recorded (status ${data.currentStatus}). Start a new payment session.`
+      )
+    }
+
+    if (this.collectionMethod === "pool") {
       // A pool account is not bound to an amount, so a changed total only
       // changes what the plugin expects to receive.
       return {
@@ -260,7 +311,8 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
     }
 
     // A dynamic virtual account is scoped to an exact amount, so a changed cart
-    // total needs a new account — the old one simply expires unused.
+    // total needs a new account. The old one is closed so a late transfer into
+    // it cannot land as an orphaned deposit.
     const account = await this.createDedicatedAccount(input, {
       sessionId: data.reference,
       currency,
@@ -268,9 +320,12 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
       amount: toAmountNumber(input.amount),
     })
 
+    await this.closeDedicatedAccount(data)
+
     const updated: AfriexSessionData = {
       ...data,
       afriexPaymentMethodId: account.paymentMethodId,
+      afriexCustomerId: account.customerId,
       accountNumber: account.accountNumber,
       accountName: account.accountName,
       institutionName: account.institutionName,
@@ -291,10 +346,66 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
   }
 
   /**
-   * Serves Medusa's built-in `/hooks/payment/{provider}` endpoint. The plugin's
-   * own `/afriex/webhook` route is the recommended one — it adds idempotency
-   * and amount-mismatch review on top of this mapping — so register one URL
-   * with Afriex, not both.
+   * Registers the shopper with Afriex once, so every later checkout reuses the
+   * same Afriex customer instead of creating one per virtual account. Medusa
+   * links the returned id to its customer and hands it back in
+   * `context.account_holder` on subsequent sessions.
+   *
+   * Afriex requires an email and a phone number. A shopper without both gets
+   * no account holder — an empty result tells Medusa nothing was created — and
+   * their virtual accounts are minted against the business instead.
+   */
+  async createAccountHolder(
+    input: CreateAccountHolderInput
+  ): Promise<CreateAccountHolderOutput> {
+    const existing = input.context.account_holder?.data?.customerId
+    if (typeof existing === "string" && existing) {
+      return { id: existing, data: { customerId: existing } }
+    }
+
+    const customerId = await this.registerAfriexCustomer(
+      input.context.customer,
+      input.context.customer.billing_address?.country_code?.toUpperCase() ??
+        this.options_.defaultCountryCode ??
+        "NG"
+    )
+
+    if (!customerId) {
+      return {} as unknown as CreateAccountHolderOutput
+    }
+
+    return { id: customerId, data: { customerId } }
+  }
+
+  async deleteAccountHolder(
+    input: DeleteAccountHolderInput
+  ): Promise<DeleteAccountHolderOutput> {
+    const customerId =
+      input.context.account_holder.external_id ??
+      (input.context.account_holder.data?.customerId as string | undefined)
+
+    if (customerId) {
+      try {
+        await this.afriex_.customers.delete(customerId)
+      } catch (error) {
+        // Medusa is removing its own customer regardless; the Afriex record is
+        // best effort and must not block that.
+        this.logger_.warn(
+          `Afriex customer ${customerId} could not be deleted: ${(error as Error).message}`
+        )
+      }
+    }
+
+    return { data: input.data }
+  }
+
+  /**
+   * Serves Medusa's built-in `/hooks/payment/{provider}` endpoint, and is what
+   * the plugin's own `/afriex/webhook` route calls to verify a signature.
+   *
+   * On the built-in endpoint this mapping alone is not enough to capture a
+   * deposit: capture is gated on `currentStatus`, which only the plugin's
+   * route writes. Register `/afriex/webhook` with Afriex, not this one.
    */
   async getWebhookActionAndData(
     payload: ProviderWebhookPayload["payload"]
@@ -356,13 +467,13 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
 
     const paymentMethod = await this.afriex_.paymentMethods.createVirtualAccount({
       currency: params.currency,
-      customerId,
+      ...(customerId ? { customerId } : {}),
       country: params.countryCode,
       amount: params.amount,
       reference: params.sessionId,
     })
 
-    return this.toCollectionAccount(paymentMethod, params.sessionId)
+    return this.toCollectionAccount(paymentMethod, params.sessionId, customerId)
   }
 
   /**
@@ -381,9 +492,31 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
     return this.toCollectionAccount(paymentMethod, params.sessionId)
   }
 
+  private async closeDedicatedAccount(
+    data: AfriexSessionData | undefined
+  ): Promise<void> {
+    if (data?.collectionMethod !== "dedicated" || !data.afriexPaymentMethodId) {
+      return
+    }
+
+    try {
+      await this.afriex_.paymentMethods.delete(data.afriexPaymentMethodId)
+    } catch (error) {
+      // Closing is a courtesy to the reconciliation path, not a precondition
+      // for Medusa's own cleanup. An account that could not be closed simply
+      // expires on Afriex's schedule instead.
+      this.logger_.warn(
+        `Afriex virtual account ${data.afriexPaymentMethodId} could not be closed: ${
+          (error as Error).message
+        }`
+      )
+    }
+  }
+
   private toCollectionAccount(
     paymentMethod: PaymentMethod,
-    sessionId: string
+    sessionId: string,
+    customerId?: string
   ): AfriexCollectionAccount {
     if (!paymentMethod?.accountNumber) {
       throw new MedusaError(
@@ -394,29 +527,54 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
 
     return {
       paymentMethodId: paymentMethod.paymentMethodId,
+      customerId: customerId ?? paymentMethod.customerId ?? undefined,
       accountNumber: paymentMethod.accountNumber,
       accountName: paymentMethod.accountName,
       institutionName: paymentMethod.institution?.institutionName,
       reference: paymentMethod.reference ?? sessionId,
+      expiresInMinutes: paymentMethod.expiresInMinutes,
     }
   }
 
   /**
-   * Reuses the Afriex customer Medusa already holds for this shopper when there
-   * is one, and only registers a new customer otherwise — a guest checkout has
-   * no account holder to reuse.
+   * Which Afriex customer a new virtual account belongs to, in order of
+   * preference: the account holder Medusa already links to this shopper, the
+   * customer a previous account on this same session was minted for, or a
+   * newly registered one. Returns undefined when there is nobody to register —
+   * the account is then owned by the business.
    */
   private async resolveAfriexCustomerId(
     input: InitiatePaymentInput | UpdatePaymentInput,
     countryCode: string
-  ): Promise<string> {
-    const existing = input.context?.account_holder?.data?.customerId
-
-    if (typeof existing === "string" && existing) {
-      return existing
+  ): Promise<string | undefined> {
+    const fromAccountHolder = input.context?.account_holder?.data?.customerId
+    if (typeof fromAccountHolder === "string" && fromAccountHolder) {
+      return fromAccountHolder
     }
 
-    const customer = input.context?.customer
+    const fromSession = (input.data as AfriexSessionData | undefined)?.afriexCustomerId
+    if (typeof fromSession === "string" && fromSession) {
+      return fromSession
+    }
+
+    return this.registerAfriexCustomer(input.context?.customer, countryCode)
+  }
+
+  private async registerAfriexCustomer(
+    customer:
+      | NonNullable<InitiatePaymentInput["context"]>["customer"]
+      | undefined,
+    countryCode: string
+  ): Promise<string | undefined> {
+    const email = customer?.email?.trim()
+    const phone = customer?.phone?.trim()
+
+    // Afriex rejects a customer without both. Rather than send empty strings
+    // and fail the checkout, let the account be business-owned.
+    if (!email || !phone) {
+      return undefined
+    }
+
     const fullName = [customer?.first_name, customer?.last_name]
       .filter(Boolean)
       .join(" ")
@@ -424,8 +582,8 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
 
     const created = await this.afriex_.customers.create({
       fullName: fullName || customer?.company_name || "Storefront Customer",
-      email: customer?.email ?? "",
-      phone: customer?.phone ?? "",
+      email,
+      phone,
       countryCode,
     })
 

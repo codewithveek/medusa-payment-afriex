@@ -1,5 +1,5 @@
 import type { BigNumberInput } from "@medusajs/framework/types"
-import { BigNumber } from "@medusajs/framework/utils"
+import { BigNumber, MathBN } from "@medusajs/framework/utils"
 
 /**
  * Medusa's `BigNumber.toString()` pads to full precision
@@ -16,21 +16,25 @@ export function toAmountNumber(amount: BigNumberInput): number {
 }
 
 /**
- * Compared numerically, never as strings: the same amount reaches this plugin
- * formatted several different ways — "25000", "25000.00", a BigNumber — and a
- * string comparison would read those as three different amounts and refuse a
- * payment that is in fact exact.
+ * Compared as decimals, never as strings or floats: the same amount reaches
+ * this plugin formatted several different ways — "25000", "25000.00", a
+ * BigNumber — and a string comparison would read those as three different
+ * amounts. Anything that is not a finite number is unequal to everything,
+ * so a missing or malformed amount can never pass as a match.
  */
 export function amountsEqual(
-  left: BigNumberInput | string | undefined,
-  right: BigNumberInput | string | undefined
+  left: BigNumberInput | string | undefined | null,
+  right: BigNumberInput | string | undefined | null
 ): boolean {
   if (left === undefined || left === null || right === undefined || right === null) {
     return false
   }
 
-  const a = Number(left)
-  const b = Number(right)
-
-  return Number.isFinite(a) && Number.isFinite(b) && a === b
+  try {
+    const a = MathBN.convert(left)
+    const b = MathBN.convert(right)
+    return a.isFinite() && b.isFinite() && MathBN.eq(a, b)
+  } catch {
+    return false
+  }
 }
