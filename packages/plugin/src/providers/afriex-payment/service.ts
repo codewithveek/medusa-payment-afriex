@@ -37,7 +37,11 @@ import type { AfriexSDK, PaymentMethod } from "@afriex/sdk"
 import { createAfriexSdk, normalizePublicKey } from "../../lib/afriex"
 import { amountsEqual, toAmountNumber, toAmountString } from "../../lib/amounts"
 import { buildPaymentInstructions } from "../../lib/build-instructions"
-import { AFRIEX_PROVIDER_IDENTIFIER } from "../../lib/constants"
+import {
+  AFRIEX_PLUGIN_ROUTE_MARKER,
+  AFRIEX_PROVIDER_IDENTIFIER,
+  AFRIEX_WEBHOOK_PATH,
+} from "../../lib/constants"
 import {
   isFinalRecordedStatus,
   mapAfriexStatusToMedusaStatus,
@@ -403,12 +407,15 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
   }
 
   /**
-   * Serves Medusa's built-in `/hooks/payment/{provider}` endpoint, and is what
-   * the plugin's own `/afriex/webhook` route calls to verify a signature.
+   * What the plugin's own `/afriex/webhook` route calls to verify a signature.
    *
-   * On the built-in endpoint this mapping alone is not enough to capture a
-   * deposit: capture is gated on `currentStatus`, which only the plugin's
-   * route writes. Register `/afriex/webhook` with Afriex, not this one.
+   * Medusa also calls this for its built-in `/hooks/payment/{provider}`
+   * endpoint, and that endpoint cannot handle Afriex safely: it captures the
+   * session's full amount without checking what actually arrived, answers 200
+   * before processing so Afriex never retries a failure, and gives the provider
+   * nowhere to record anything. Left alone, a store pointed at it would simply
+   * never see an order get paid. So a genuine Afriex event that arrives that
+   * way is refused and logged at error level, naming the URL to use instead.
    */
   async getWebhookActionAndData(
     payload: ProviderWebhookPayload["payload"]
@@ -425,6 +432,18 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
       event = this.afriex_.webhooks.verifyAndParse(rawBody, signature)
     } catch {
       this.logger_.warn("Afriex webhook rejected: invalid signature")
+      return { action: PaymentActions.NOT_SUPPORTED }
+    }
+
+    // Checked only after the signature verifies, so this is a real Afriex
+    // event on the wrong URL and not internet noise filling the error log.
+    if (!payload.headers?.[AFRIEX_PLUGIN_ROUTE_MARKER]) {
+      const transactionId = isTransactionEvent(event)
+        ? ` for transaction ${event.data.transactionId}`
+        : ""
+      this.logger_.error(
+        `Afriex ${event.event} event${transactionId} arrived on Medusa's generic /hooks/payment endpoint, which this provider does not support. It was NOT processed and no order was updated. Register https://<your-server>${AFRIEX_WEBHOOK_PATH} as the webhook URL in the Afriex dashboard instead.`
+      )
       return { action: PaymentActions.NOT_SUPPORTED }
     }
 

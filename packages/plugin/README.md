@@ -113,7 +113,7 @@ Any of these forms works, because the plugin normalises them:
 - The key pasted as-is across several lines, inside double quotes.
 
 `AFRIEX_ENVIRONMENT` is required. The Afriex SDK silently falls back to
-production when it is missing, so the plugin makes you say it out loud.
+production when it is missing, so the plugin makes you set this explicitly.
 
 ✅ **You should have:** three `AFRIEX_*` variables set.
 
@@ -186,9 +186,13 @@ https://your-medusa-server.com/afriex/webhook
 
 Locally, run `ngrok http 9000` and use `https://<your-subdomain>.ngrok.app/afriex/webhook`.
 
-> Use this URL and only this URL. Every Medusa server also has a generic
-> `/hooks/payment/afriex_afriex` endpoint. It does **not** work for this
-> provider. Events sent there are verified and then go nowhere.
+> Use this URL and only this URL. Medusa also has a generic
+> `/hooks/payment/afriex_afriex` endpoint, which providers like Stripe use. This
+> plugin does not, because a bank transfer can arrive in any amount and the
+> generic endpoint captures without checking it. The plugin's own route checks
+> the amount first, records what arrived, and tells Afriex to retry if anything
+> fails. If the generic URL is registered by mistake, each event is refused and
+> your Medusa log says so at error level, naming the right URL.
 
 ✅ **You should see:** the URL saved in the Afriex dashboard. To prove Afriex can
 reach you, see [Testing](#testing).
@@ -214,14 +218,14 @@ const session = payment_collection.payment_sessions?.find(
 const instructions = session?.data?.instructions;
 ```
 
-**Show `instructions` to the shopper.** It is plain data, so you decide how it looks:
+**Show `instructions` to the shopper.** It is plain data, so you decide how to render the UI:
 
 ```jsonc
 {
   "bankName": "Providus Bank",
   "accountNumber": "0123456789",
   "accountName": "Afriex / Order",
-  "note": "This account is reserved for your order only. No reference needed.",
+  "note": "This account is reserved for your order only.",
   "expiresNote": "This account expires in 30 minutes — please complete your transfer before then.",
   "expiresInMinutes": 30
 }
@@ -383,6 +387,7 @@ needs a human ends up there.
 | Webhook returns `401`                                                                     | The public key is from the other environment, or a proxy is rewriting the request body                                                                               | Use the public key that matches your API key's environment. Make sure nothing between Afriex and Medusa re-serialises the JSON. |
 | Webhook returns `404`                                                                     | The plugin is registered as a provider but not under `plugins`                                                                                                       | Add `"medusa-payment-afriex"` to `plugins`, as in Step 4.                                                                       |
 | Webhook returns `200` with `unknown_session`, order stays unpaid                          | The event is for something else, or for a payment session Medusa has since deleted because the cart changed                                                          | Check the log line for the transaction id. If it says the deposit has settled, that money needs matching by hand.               |
+| Order stays unpaid, and the log says an event _arrived on Medusa's generic /hooks/payment endpoint_ | Medusa's generic webhook URL was registered with Afriex instead of the plugin's | Replace it with `https://your-server/afriex/webhook`, as in Step 6. Events sent to the wrong URL were refused, not queued, so check those orders by hand. |
 | Order stays unpaid and no webhook arrives                                                 | Afriex cannot reach your server, or the URL was saved in the other environment's dashboard                                                                           | Re-check Step 6. Test with level 1 under [Testing](#testing).                                                                   |
 | Afriex is missing from the region's provider list                                         | The provider did not load                                                                                                                                            | Check Step 4 and the server's startup log.                                                                                      |
 

@@ -18,7 +18,11 @@ import type {
   WebhookPayload,
 } from "@afriex/sdk"
 import { amountsEqual, toAmountNumber } from "./amounts"
-import { AFRIEX_AMOUNT_MISMATCH, AFRIEX_PROVIDER_ID_PREFIX } from "./constants"
+import {
+  AFRIEX_AMOUNT_MISMATCH,
+  AFRIEX_PLUGIN_ROUTE_MARKER,
+  AFRIEX_PROVIDER_ID_PREFIX,
+} from "./constants"
 import { claimEvent, releaseClaim } from "./idempotency-store"
 import {
   isFinalRecordedStatus,
@@ -322,7 +326,10 @@ async function verifySignature(
         payload: {
           data: parsed as unknown as Record<string, unknown>,
           rawData: rawString,
-          headers,
+          // Tells the provider this event came through the plugin's route.
+          // Without it the provider assumes Medusa's generic endpoint and
+          // refuses the event out loud.
+          headers: { ...headers, [AFRIEX_PLUGIN_ROUTE_MARKER]: "1" },
         },
       })
 

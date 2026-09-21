@@ -58,8 +58,9 @@ ngrok http 9000
 ```
 
 Register that path only. Medusa's generic `/hooks/payment/afriex_afriex`
-endpoint verifies the event and then goes nowhere for this provider — capture is
-gated on a status that only the plugin's own route writes.
+endpoint captures without checking the amount that arrived, which a bank
+transfer cannot afford, so the provider refuses any event that comes in that way
+and logs an error naming this URL instead.
 
 ## Paying an order without Afriex
 

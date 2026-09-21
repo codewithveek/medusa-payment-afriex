@@ -126,7 +126,12 @@ describe("Afriex webhook handling", () => {
 
       const [call] = container.paymentModule.getWebhookActionAndData.mock.calls[0]!
       expect(call.payload.rawData).toBe(body)
-      expect(call.payload.headers).toEqual({ "x-webhook-signature": "sig" })
+      // The request's own headers, plus the marker that tells the provider the
+      // event came through this route rather than Medusa's generic endpoint.
+      expect(call.payload.headers).toEqual({
+        "x-webhook-signature": "sig",
+        "x-afriex-plugin-route": "1",
+      })
     })
 
     it("verifies the signature before it looks the session up", async () => {

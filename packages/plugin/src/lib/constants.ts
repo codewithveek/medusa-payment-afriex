@@ -7,6 +7,17 @@ export const AFRIEX_PROVIDER_ID_PREFIX = `pp_${AFRIEX_PROVIDER_IDENTIFIER}_`
 /** Path the plugin registers on the Medusa server for Afriex to call. */
 export const AFRIEX_WEBHOOK_PATH = "/afriex/webhook"
 
+/**
+ * Set by the plugin's own webhook route on the headers it hands to the provider
+ * for verification. Its absence tells the provider the event came in through
+ * Medusa's generic `/hooks/payment/{provider}` endpoint instead, which cannot
+ * process Afriex events safely and must say so rather than fail in silence.
+ *
+ * It carries no trust: a signature still has to verify either way. All it
+ * decides is whether a wrongly registered webhook URL gets called out.
+ */
+export const AFRIEX_PLUGIN_ROUTE_MARKER = "x-afriex-plugin-route"
+
 /** Afriex webhook events this plugin acts on. Anything else is acknowledged and ignored. */
 export const AFRIEX_TRANSACTION_EVENTS = [
   "TRANSACTION.CREATED",

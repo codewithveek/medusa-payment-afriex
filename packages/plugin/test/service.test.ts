@@ -33,6 +33,12 @@ const OPTIONS = {
   webhookPublicKey: PUBLIC_KEY,
 }
 
+/** Headers as the plugin's own `/afriex/webhook` route hands them to the provider. */
+const VIA_PLUGIN_ROUTE = { "x-webhook-signature": "sig", "x-afriex-plugin-route": "1" }
+
+/** Headers as Medusa's generic `/hooks/payment/{provider}` endpoint hands them over. */
+const VIA_GENERIC_ROUTE = { "x-webhook-signature": "sig" }
+
 const logger = {
   info: vi.fn(),
   warn: vi.fn(),
@@ -512,7 +518,7 @@ describe("AfriexPaymentProviderService", () => {
       const result = await service.getWebhookActionAndData({
         data: payload as any,
         rawData: JSON.stringify(payload),
-        headers: { "x-webhook-signature": "sig" },
+        headers: VIA_PLUGIN_ROUTE,
       })
 
       expect(result.action).toBe("captured")
@@ -528,12 +534,50 @@ describe("AfriexPaymentProviderService", () => {
       const result = await service.getWebhookActionAndData({
         data: payload as any,
         rawData: JSON.stringify(payload),
-        headers: { "x-webhook-signature": "sig" },
+        headers: VIA_PLUGIN_ROUTE,
       })
 
       expect(result.action).not.toBe("not_supported")
       // Empty, so Medusa's own webhook subscriber ignores it.
       expect(result.data?.session_id).toBe("")
+    })
+
+    describe("on Medusa's generic /hooks/payment endpoint", () => {
+      it("refuses a genuine Afriex event and says which URL to register instead", async () => {
+        const service = buildService()
+        const payload = buildTransactionPayload()
+        sdk.webhooks.verifyAndParse.mockReturnValueOnce(payload)
+
+        const result = await service.getWebhookActionAndData({
+          data: payload as any,
+          rawData: JSON.stringify(payload),
+          headers: VIA_GENERIC_ROUTE,
+        })
+
+        // Medusa's subscriber drops not_supported, so nothing is captured
+        // without the amount ever having been checked.
+        expect(result).toEqual({ action: "not_supported" })
+        expect(logger.error).toHaveBeenCalledTimes(1)
+        expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/\/afriex\/webhook/))
+        expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/NOT processed/))
+        expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/txn_1/))
+      })
+
+      it("stays quiet about requests that do not verify, so noise cannot fill the error log", async () => {
+        const service = buildService()
+        sdk.webhooks.verifyAndParse.mockImplementationOnce(() => {
+          throw new Error("bad signature")
+        })
+
+        const result = await service.getWebhookActionAndData({
+          data: {},
+          rawData: "{}",
+          headers: VIA_GENERIC_ROUTE,
+        })
+
+        expect(result.action).toBe("not_supported")
+        expect(logger.error).not.toHaveBeenCalled()
+      })
     })
 
     it("returns not_supported when the signature does not verify", async () => {
@@ -575,7 +619,7 @@ describe("AfriexPaymentProviderService", () => {
       const result = await service.getWebhookActionAndData({
         data: {},
         rawData: "{}",
-        headers: { "x-webhook-signature": "sig" },
+        headers: VIA_PLUGIN_ROUTE,
       })
 
       expect(result.action).toBe("not_supported")
