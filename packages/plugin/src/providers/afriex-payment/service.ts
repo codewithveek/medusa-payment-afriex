@@ -34,7 +34,7 @@ import type {
 } from "@medusajs/framework/types"
 import { WEBHOOK_SIGNATURE_HEADER } from "@afriex/sdk"
 import type { AfriexSDK, PaymentMethod } from "@afriex/sdk"
-import { createAfriexSdk } from "../../lib/afriex"
+import { createAfriexSdk, normalizePublicKey } from "../../lib/afriex"
 import { amountsEqual, toAmountNumber, toAmountString } from "../../lib/amounts"
 import { buildPaymentInstructions } from "../../lib/build-instructions"
 import { AFRIEX_PROVIDER_IDENTIFIER } from "../../lib/constants"
@@ -54,6 +54,9 @@ type InjectedDependencies = {
 }
 
 const ENVIRONMENTS = ["staging", "production"] as const
+
+/** The one currency Afriex will open a virtual account in on behalf of a customer. */
+const CUSTOMER_ACCOUNT_CURRENCY = "NGN"
 
 class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProviderOptions> {
   static identifier = AFRIEX_PROVIDER_IDENTIFIER
@@ -96,7 +99,7 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
     // invalid, which would surface only as Afriex retrying against a 401.
     // Fail at boot instead, where the operator is looking.
     try {
-      createPublicKey(options.webhookPublicKey as string)
+      createPublicKey(normalizePublicKey(String(options.webhookPublicKey)))
     } catch {
       throw new MedusaError(
         MedusaError.Types.INVALID_ARGUMENT,
@@ -429,11 +432,13 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
       return { action: PaymentActions.NOT_SUPPORTED }
     }
 
-    const sessionId = getSessionId(event.data)
-
-    if (!sessionId) {
-      return { action: PaymentActions.NOT_SUPPORTED }
-    }
+    // `not_supported` is reserved for "this did not verify" — the plugin's
+    // route reads it as exactly that. A verified event that simply carries no
+    // reference is still verified, and may yet be matched by its account, so
+    // it is reported with an empty session id. Medusa's own webhook subscriber
+    // ignores any result without a session id, so nothing acts on it there.
+    const reference: unknown = getSessionId(event.data)
+    const sessionId = typeof reference === "string" ? reference : ""
 
     const data = {
       session_id: sessionId,
@@ -463,7 +468,14 @@ class AfriexPaymentProviderService extends AbstractPaymentProvider<AfriexProvide
       amount: number
     }
   ): Promise<AfriexCollectionAccount> {
-    const customerId = await this.resolveAfriexCustomerId(input, params.countryCode)
+    // Afriex only mints customer-owned virtual accounts in NGN; any other
+    // currency with a customerId is refused outright
+    // (UNSUPPORTED_VIRTUAL_ACCOUNT_CURRENCY). Those accounts are created for
+    // the business instead, which is what Afriex's own docs prescribe.
+    const customerId =
+      params.currency === CUSTOMER_ACCOUNT_CURRENCY
+        ? await this.resolveAfriexCustomerId(input, params.countryCode)
+        : undefined
 
     const paymentMethod = await this.afriex_.paymentMethods.createVirtualAccount({
       currency: params.currency,

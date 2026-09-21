@@ -61,6 +61,21 @@ Register that path only. Medusa's generic `/hooks/payment/afriex_afriex`
 endpoint verifies the event and then goes nowhere for this provider — capture is
 gated on a status that only the plugin's own route writes.
 
+## Paying an order without Afriex
+
+You do not need a real transfer to see an order get paid. The repository has a
+webhook simulator that signs events with a throwaway key — the full walkthrough
+is in the [root README](../../README.md#testing-without-real-money). The part
+that lives here is the helper that tells you which session to pay:
+
+```bash
+pnpm afriex:sessions
+```
+
+It lists the ten most recent Afriex payment sessions with their id, expected
+amount, status, and virtual account id, and prints a ready-made
+`pnpm webhook:send ...` command for the newest one.
+
 ## What the seed covers
 
 Enough for one cart to reach the Afriex payment step and be placed: an NGN

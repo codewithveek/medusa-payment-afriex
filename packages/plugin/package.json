@@ -18,7 +18,8 @@
     "africa"
   ],
   "files": [
-    ".medusa/server"
+    ".medusa/server",
+    "!**/*.png"
   ],
   "exports": {
     "./package.json": "./package.json",

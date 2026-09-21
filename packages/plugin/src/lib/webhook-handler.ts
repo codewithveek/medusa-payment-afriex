@@ -100,29 +100,35 @@ export async function processAfriexWebhook(
   // From here the payload is Afriex's own. Its reference is still checked for
   // shape before it touches the database: the type says string, the wire does not.
   const transaction = parsed.data
-  const reference = getSessionId(transaction)
+  const rawReference: unknown = getSessionId(transaction)
+  const reference =
+    typeof rawReference === "string" && rawReference ? rawReference : undefined
 
-  if (typeof reference !== "string" || !reference) {
-    logUnmatched(logger, transaction, "carried no usable reference")
-    return { success: true, outcome: "unknown_session" }
-  }
-
+  // Two independent threads lead back to a session: the reference, and the
+  // account the money landed in. A missing or unusable reference only rules
+  // out the first — the deposit may still be perfectly attributable.
   let session: PaymentSessionDTO | undefined
   try {
     session =
-      (await retrieveSession(paymentModule, reference)) ??
+      (reference ? await retrieveSession(paymentModule, reference) : undefined) ??
       (await findSessionByAccount(paymentModule, providerId, transaction))
   } catch (error) {
     // Not a miss — the lookup itself failed. A 200 here would tell Afriex the
     // event was handled and end its retries.
     logger.error(
-      `Afriex webhook for session ${reference} could not be looked up: ${(error as Error).message}`
+      `Afriex webhook for transaction ${String(transaction.transactionId)} could not be looked up: ${(error as Error).message}`
     )
     return { success: false, statusCode: 500, error: "Session lookup failed" }
   }
 
   if (!session) {
-    logUnmatched(logger, transaction, `referenced unknown payment session ${reference}`)
+    logUnmatched(
+      logger,
+      transaction,
+      reference
+        ? `referenced unknown payment session ${reference}`
+        : "carried no usable reference and named no known account"
+    )
     return { success: true, outcome: "unknown_session" }
   }
 
@@ -343,9 +349,14 @@ async function findSessionByAccount(
   providerId: string,
   transaction: TransactionWebhookData
 ): Promise<PaymentSessionDTO | undefined> {
-  const destinationId = transaction.destinationId
+  // A deposit "pulls funds from a source payment method", so the virtual
+  // account is normally the transaction's source. Both ends are checked: a
+  // payment method id identifies exactly one dedicated account either way.
+  const accountIds = [transaction.sourceId, transaction.destinationId].filter(
+    (id): id is string => typeof id === "string" && id.length > 0
+  )
 
-  if (typeof destinationId !== "string" || !destinationId) {
+  if (!accountIds.length) {
     return undefined
   }
 
@@ -359,7 +370,8 @@ async function findSessionByAccount(
     const data = candidate.data as unknown as Partial<AfriexSessionData> | undefined
     return (
       data?.collectionMethod === "dedicated" &&
-      data.afriexPaymentMethodId === destinationId
+      typeof data.afriexPaymentMethodId === "string" &&
+      accountIds.includes(data.afriexPaymentMethodId)
     )
   })
 }

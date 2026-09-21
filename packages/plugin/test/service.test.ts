@@ -14,7 +14,9 @@ const sdk = vi.hoisted(() => ({
   webhooks: { verifyAndParse: vi.fn() },
 }))
 
-vi.mock("../src/lib/afriex", () => ({
+vi.mock("../src/lib/afriex", async (importOriginal) => ({
+  // Only the SDK factory is replaced. Key normalisation is real code under test.
+  ...(await importOriginal<typeof import("../src/lib/afriex")>()),
   createAfriexSdk: () => sdk,
 }))
 
@@ -116,6 +118,16 @@ describe("AfriexPaymentProviderService", () => {
       expect(() =>
         AfriexPaymentProviderService.validateOptions({ ...OPTIONS, webhookPublicKey: "not-a-pem" })
       ).toThrow(/not a valid public key/)
+    })
+
+    it("accepts the same key however an environment variable mangled its newlines", () => {
+      const flattened = PUBLIC_KEY.trim().replace(/\n/g, "\\n")
+
+      for (const webhookPublicKey of [flattened, `"${flattened}"`, `  ${PUBLIC_KEY}\n\n`]) {
+        expect(() =>
+          AfriexPaymentProviderService.validateOptions({ ...OPTIONS, webhookPublicKey })
+        ).not.toThrow()
+      }
     })
 
     it("requires the environment to be stated, since the SDK would otherwise default to production", () => {
@@ -221,6 +233,25 @@ describe("AfriexPaymentProviderService", () => {
 
       expect(sdk.customers.create).not.toHaveBeenCalled()
       const [params] = sdk.paymentMethods.createVirtualAccount.mock.calls[0]!
+      expect(params).not.toHaveProperty("customerId")
+    })
+
+    it("mints a business-owned account outside NGN, the only currency Afriex opens customer accounts in", async () => {
+      const service = buildService("dedicated")
+
+      await service.initiatePayment(
+        initiateInput({
+          currency_code: "usd",
+          context: {
+            ...initiateInput().context,
+            account_holder: { data: { customerId: "cus_existing" } },
+          },
+        } as Partial<InitiatePaymentInput>)
+      )
+
+      expect(sdk.customers.create).not.toHaveBeenCalled()
+      const [params] = sdk.paymentMethods.createVirtualAccount.mock.calls[0]!
+      expect(params).toMatchObject({ currency: "USD" })
       expect(params).not.toHaveProperty("customerId")
     })
 
@@ -487,6 +518,22 @@ describe("AfriexPaymentProviderService", () => {
       expect(result.action).toBe("captured")
       expect(result.data?.session_id).toBe(SESSION_ID)
       expect(Number(result.data?.amount)).toBe(25000)
+    })
+
+    it("reports a verified event with no reference as verified, because not_supported means the signature failed", async () => {
+      const service = buildService()
+      const payload = buildTransactionPayload({ merchantReference: undefined, meta: {} })
+      sdk.webhooks.verifyAndParse.mockReturnValueOnce(payload)
+
+      const result = await service.getWebhookActionAndData({
+        data: payload as any,
+        rawData: JSON.stringify(payload),
+        headers: { "x-webhook-signature": "sig" },
+      })
+
+      expect(result.action).not.toBe("not_supported")
+      // Empty, so Medusa's own webhook subscriber ignores it.
+      expect(result.data?.session_id).toBe("")
     })
 
     it("returns not_supported when the signature does not verify", async () => {

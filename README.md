@@ -1,86 +1,261 @@
 # medusa-payment-afriex
 
-<p dir="auto"><a target="_blank" rel="noopener noreferrer nofollow" href="./packages/plugin/medusa-afriex-plugin.png"><img src="./packages/plugin/medusa-afriex-plugin.png" alt="Medusa Afriex Plugin" style="max-width: 100%;"></a></p>
+Accept bank transfers in a [Medusa](https://medusajs.com) v2 store with
+[Afriex](https://www.afriex.com). The shopper gets a bank account number at
+checkout, and a verified Afriex webhook marks the order paid when the transfer lands.
 
-A Medusa v2 payment provider that lets a storefront collect payment through
-Afriex's bank rails — a **dedicated virtual account** minted per order, or a
-standing **pool account** the shopper quotes a reference against. Deposits are
-confirmed by webhook, and the order is completed from that webhook alone.
+<p><img src="./packages/plugin/medusa-afriex-plugin.png" alt="Medusa Afriex payment plugin" width="100%"></p>
 
-**📖 Full plugin documentation lives in
-[`packages/plugin/README.md`](./packages/plugin/README.md).**
+> **Want to use the plugin in your store?** Everything you need is in
+> **[`packages/plugin/README.md`](./packages/plugin/README.md)**: getting your
+> Afriex keys, seven setup steps, options, and troubleshooting.
+>
+> This page is for running the example store and working on the plugin itself.
 
----
-
-## Repository layout
+## What is in this repository
 
 This is a pnpm workspace.
 
 ```
 packages/
-  plugin/            medusa-payment-afriex — the published npm package
+  plugin/             medusa-payment-afriex, the package published to npm
 examples/
-  medusa-backend/    a Medusa store wired to the plugin via workspace:*
-  storefront/        a React Router shop that walks a cart through the checkout
+  medusa-backend/     a Medusa store that loads the plugin straight from this workspace
+  storefront/         a small React Router shop that walks one cart through checkout
+scripts/
+  afriex-webhook.mjs  signs and sends test webhooks, so you can pay orders locally for free
 ```
 
-Examples live outside `packages/` on purpose: they are private apps that consume
-the plugin exactly the way an installing project would, and they are never
-published.
+The examples sit outside `packages/` on purpose. They are private apps that use
+the plugin exactly the way an installing project would, and they are never published.
+
+| Read this | When you want to |
+| --- | --- |
+| [`packages/plugin/README.md`](./packages/plugin/README.md) | Install and configure the plugin in your own store |
+| [`examples/medusa-backend/README.md`](./examples/medusa-backend/README.md) | Understand the example store, its seed data, and webhook tunnelling |
+| [`examples/storefront/README.md`](./examples/storefront/README.md) | See what the shopper sees, and lift checkout code from it |
+
+## Requirements
+
+- Node **20.19 or newer**, and [pnpm](https://pnpm.io)
+- Postgres. `pnpm db:up` in the example backend starts one with Docker.
+- An Afriex API key and webhook public key. See
+  [Step 1 of the plugin README](./packages/plugin/README.md#step-1-get-your-two-afriex-keys).
+
+## Run the example store
+
+From a fresh clone to a storefront you can check out in.
+
+**1. Install and build the plugin.** Medusa loads the plugin from its built
+output, so it has to be built before the backend starts.
+
+```bash
+pnpm install
+pnpm plugin:build
+```
+
+**2. Start the backend.**
+
+```bash
+cd examples/medusa-backend
+cp .env.template .env     # then fill in the three AFRIEX_* values
+pnpm db:up                # Postgres in Docker. Skip if DATABASE_URL points at your own.
+pnpm db:migrate           # also creates the plugin's afriex_processed_webhook table
+pnpm seed                 # prints a publishable key. Copy it.
+pnpm dev                  # http://localhost:9000, admin at /app
+```
+
+Create an admin user with `npx medusa user -e admin@example.com -p supersecret`.
+
+**3. Start the storefront**, in a second terminal.
+
+```bash
+cd examples/storefront
+cp .env.template .env     # paste the publishable key from `pnpm seed`
+pnpm dev                  # http://localhost:8000
+```
+
+✅ **You should see:** the seeded product at http://localhost:8000. Buying it
+takes you through an address form to an order page showing a bank account to
+pay into, which waits for the payment.
+
+**If checkout says "Afriex payment initiation failed":** you are almost certainly
+on staging keys. Afriex only creates virtual accounts in **production**. The
+server and the webhook route work fine on staging, but no account can be created,
+so checkout stops there. Use a production API key with
+`AFRIEX_ENVIRONMENT=production` to get past it. Creating a virtual account is
+real, but it moves no money. The actual Afriex error is in the backend log.
+
+## Testing without real money
+
+A real test needs a real bank transfer. To test everything on the Medusa side
+without one, you can play Afriex's part yourself.
+
+Afriex signs each webhook with its private key, and the plugin trusts only what
+verifies against the public key in its config. You cannot forge Afriex's
+signature. So you swap roles: generate your own key pair, give the plugin *your*
+public key, and sign test events with your private key.
+
+**1. Generate a throwaway key pair.**
+
+```bash
+pnpm webhook:keygen
+```
+
+It prints an `AFRIEX_WEBHOOK_PUBLIC_KEY="..."` line. Put it in
+`examples/medusa-backend/.env` in place of the real key, and **restart the
+backend**, which reads its options once at boot. The private key stays in
+`.afriex-dev/`, which is git-ignored.
+
+**2. Create an order to pay.** Check out in the storefront until you reach the
+order page with the bank details. Then list the payment sessions:
+
+```bash
+cd examples/medusa-backend
+pnpm afriex:sessions
+```
+
+It prints each session's id, expected amount, and account id, plus a ready-made
+command for the newest one.
+
+**3. Pay it.** From the repository root:
+
+```bash
+pnpm webhook:send --session payses_01J... --amount 25000
+```
+
+✅ **You should see:** `HTTP 200` with `"outcome":"captured"`, the storefront's
+order page flip to paid within five seconds, and the Afriex widget on the order
+in the admin showing the transaction.
+
+**Now break it on purpose.** Each of these is a case the plugin handles. Start a
+fresh order for each one, unless it says otherwise.
+
+| Try this | Command | Expect |
+| --- | --- | --- |
+| Underpayment | `--session X --amount 20000` | `amount_mismatch`. Not captured. The widget shows expected against received. |
+| Wrong currency | `--session X --amount 25000 --currency GHS` | `amount_mismatch` |
+| Afriex redelivers | `--session X --amount 25000 --transaction txn_1 --repeat 3` | `captured` once, then `duplicate` twice |
+| Shopper pays twice | pay the order, then send the same command again | `extra_deposit`. The widget lists it as needing a refund. |
+| Underpays, then corrects | `--amount 20000`, then `--amount 25000`, same session | `amount_mismatch`, then `captured`. The first transfer is kept as an extra deposit. |
+| In review, then settles | `--transaction txn_1 --status IN_REVIEW`, then the same without `--status` | `status_recorded`, then `captured` |
+| Late event after payment | pay the order, then `--transaction <same id> --status PROCESSING` | `status_recorded`. The order stays paid. |
+| Forged request | `--session X --amount 25000 --bad-signature` | `HTTP 401`. Nothing is read or written. |
+| Reference lost in transit | `--no-reference --account <account id> --amount 25000` | `captured`, matched by the account instead |
+| Unknown order | `--session payses_nope --amount 100` | `unknown_session`, and an error-level log line because the deposit had settled |
+
+`pnpm webhook:send --dry-run ...` prints the payload and signature without
+sending, and `node scripts/afriex-webhook.mjs help` lists every option. The
+script has no dependencies, so you can copy it into any project.
+
+> ⚠️ **Local use only.** Anyone holding `.afriex-dev/webhook-private.pem` can mark
+> orders paid on any server configured with its public key. Never deploy that
+> public key. Put Afriex's real key back before you go near production. While
+> the throwaway key is in place, genuine Afriex webhooks are rejected with a
+> `401`, which is expected.
+
+To check the other direction, that Afriex can reach your machine and that your
+*real* public key is right, see
+[Testing in the plugin README](./packages/plugin/README.md#testing).
 
 ## Working on the plugin
 
 ```bash
-pnpm install          # installs every workspace at once
-pnpm build            # turbo: builds the plugin, then anything depending on it
-pnpm test             # vitest, across the workspace
+pnpm install          # every workspace at once
+pnpm build            # turbo: the plugin first, then anything depending on it
+pnpm test             # vitest
 pnpm typecheck
 ```
 
-Scoped to a single workspace:
+| Command | What it does |
+| --- | --- |
+| `pnpm plugin:build` | One build of the plugin into `packages/plugin/.medusa/server` |
+| `pnpm plugin:dev` | Rebuilds the plugin whenever you save |
+| `pnpm backend:dev` | Runs the example backend |
+| `pnpm storefront:dev` | Runs the example storefront |
+| `pnpm --filter medusa-payment-afriex test` | The plugin's tests only |
+| `pnpm webhook:keygen`, `pnpm webhook:send` | The webhook simulator |
 
-```bash
-pnpm --filter medusa-payment-afriex test
-pnpm plugin:dev       # medusa plugin:develop, rebuilds the plugin on change
-pnpm backend:dev      # runs examples/medusa-backend against that build
-pnpm storefront:dev   # runs examples/storefront against that backend
+**Restart the backend after the plugin rebuilds.** The examples depend on
+`"medusa-payment-afriex": "workspace:*"`, which pnpm links to the local package,
+and Medusa loads it from the built output. `medusa develop` watches the backend's
+own `src/`, not the linked plugin, so a rebuild does not reload the running server.
+
+A comfortable loop is three terminals: `pnpm plugin:dev`, the backend, and the
+storefront.
+
+### Where things are
+
+```
+packages/plugin/src/
+  providers/afriex-payment/service.ts   the payment provider: accounts, customers, options
+  lib/webhook-handler.ts                the only path by which Afriex changes payment state
+  lib/idempotency-store.ts              claim-before-process, backed by a unique index
+  lib/map-status.ts                     Afriex status → Medusa session status
+  api/afriex/webhook/route.ts           POST /afriex/webhook
+  modules/afriex-webhook/               the processed-webhook table and its migration
+  jobs/                                 nightly pruning of that table
+  admin/widgets/                        the order page widget
 ```
 
-The examples depend on `"medusa-payment-afriex": "workspace:*"`, which pnpm
-links to the local package. Medusa resolves the plugin from its built
-`.medusa/server` output, so the plugin has to be built — `pnpm plugin:dev` keeps
-that output fresh while you edit.
+### What the tests protect
 
-Note that `medusa develop` watches the backend's own `src/`, not the linked
-plugin's build output, so restart the backend after a plugin rebuild.
+The tests check behaviour that would cost money if it broke, rather than that
+functions return:
 
-## Seeing it work
+- one capture per deposit, however many times Afriex delivers it
+- no capture on a wrong amount or currency
+- nothing read or written before the signature verifies
+- a settled order never un-paid by a late progress event
+- a second deposit recorded, never silently dropped
+- a failed reconciliation releasing its claim, so the retry still lands
+- a lookup failure answered with `500`, never mistaken for "unknown order"
 
-Three terminals, in this order:
+They mock Medusa and the Afriex SDK. They do not prove the live Afriex flow,
+which can only run in production. The simulator above covers the Medusa half
+for real. One small live order covers the rest.
 
-```bash
-pnpm plugin:dev                          # keeps the plugin build fresh
-cd examples/medusa-backend && pnpm dev    # after db:up, db:migrate, seed
-cd examples/storefront    && pnpm dev     # http://localhost:8000
-```
+## Roadmap
 
-[`examples/medusa-backend/README.md`](./examples/medusa-backend/README.md) covers
-database setup, seeding and webhook tunnelling;
-[`examples/storefront/README.md`](./examples/storefront/README.md) covers the
-checkout the shopper walks through.
+- **Pool accounts.** Afriex attributes pool deposits by a reference it assigns
+  itself (the customer id, when one is passed). The plugin still matches on the
+  Medusa session id, which Afriex never sees, so `collectionMethod: "pool"` is
+  experimental and does not mark orders paid. The fix is to request the pool
+  account per customer and match deposits on Afriex's reference plus the amount.
+- **Refunds** from the Medusa admin.
+- **Closing a virtual account as soon as it is paid**, so a second transfer
+  bounces at the bank instead of arriving as an extra deposit.
 
 ## Releasing
 
-Versioning goes through [changesets](https://github.com/changesets/changesets):
+Versions go through [changesets](https://github.com/changesets/changesets).
+Only `packages/*` is published. The examples are private.
 
 ```bash
-pnpm changeset          # describe the change, pick a bump
-pnpm version-packages   # apply bumps and update changelogs
-pnpm release            # build the workspace packages and publish
+pnpm changeset          # describe the change and pick a bump
+pnpm version-packages   # apply the bumps and write the changelog
+pnpm release            # build packages/* and publish to npm
 ```
 
-Only `packages/*` is published. `examples/*` is marked private.
+For a pre-release that people must opt in to:
+
+```bash
+cd packages/plugin
+npm version 0.1.0-beta.0 --no-git-tag-version
+npm publish --tag beta
+```
+
+Before any release, run `pnpm test`, `pnpm typecheck`, and `pnpm plugin:build`,
+and check what will ship with `npm pack --dry-run` in `packages/plugin`.
+
+## Contributing
+
+Issues and pull requests are welcome at
+[github.com/codewithveek/medusa-payment-afriex](https://github.com/codewithveek/medusa-payment-afriex/issues).
+For a bug in payment handling, the most useful report includes the Afriex
+transaction status, the outcome the webhook returned, and the matching
+error-level log line.
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT. See [LICENSE](./LICENSE).

@@ -204,6 +204,7 @@ describe("Afriex webhook handling", () => {
         buildTransactionPayload({
           merchantReference: { id: { $like: "payses_%" } } as unknown as string,
           meta: {},
+          destinationId: undefined,
         })
       )
 
@@ -211,6 +212,27 @@ describe("Afriex webhook handling", () => {
 
       expect(result.outcome).toBe("unknown_session")
       expect(container.paymentModule.retrievePaymentSession).not.toHaveBeenCalled()
+    })
+
+    it("still matches by account when the event carries no reference at all", async () => {
+      const container = createMockContainer()
+      const body = JSON.stringify(
+        buildTransactionPayload({
+          merchantReference: undefined,
+          meta: {},
+          sourceId: "pm_virtual_1",
+          destinationId: undefined,
+        })
+      )
+
+      const result = await processAfriexWebhook(asContainer(container), body, {})
+
+      expect(result.outcome).toBe("captured")
+      // The only lookup by id is the post-capture check on the matched session,
+      // never one keyed on a value from the payload.
+      for (const [id] of container.paymentModule.retrievePaymentSession.mock.calls) {
+        expect(id).toBe(SESSION_ID)
+      }
     })
 
     it("falls back to the destination account when the reference did not survive, for dedicated accounts", async () => {
@@ -229,6 +251,25 @@ describe("Afriex webhook handling", () => {
         expect.objectContaining({ provider_id: PROVIDER_ID }),
         expect.anything()
       )
+    })
+
+    it("recognises the account whether the deposit names it as its source or its destination", async () => {
+      const container = createMockContainer()
+      container.paymentModule.retrievePaymentSession.mockRejectedValueOnce(
+        new MedusaError(MedusaError.Types.NOT_FOUND, "not found")
+      )
+      const body = JSON.stringify(
+        buildTransactionPayload({
+          merchantReference: "garbled",
+          meta: {},
+          sourceId: "pm_virtual_1",
+          destinationId: "wallet_business",
+        })
+      )
+
+      const result = await processAfriexWebhook(asContainer(container), body, {})
+
+      expect(result.outcome).toBe("captured")
     })
 
     it("does not fall back by account for a pool account, which every shopper shares", async () => {

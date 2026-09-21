@@ -1,73 +1,146 @@
 # medusa-payment-afriex
 
-<p dir="auto"><a target="_blank" rel="noopener noreferrer nofollow" href="./medusa-afriex-plugin.png"><img src="./medusa-afriex-plugin.png" alt="Medusa Afriex Plugin" style="max-width: 100%;"></a></p>
+Accept bank transfers in your Medusa store with [Afriex](https://www.afriex.com).
 
-A Medusa v2 payment provider that lets a storefront collect payment through
-Afriex's bank rails — a **dedicated virtual account** minted per order, or a
-standing **pool account** the shopper quotes a reference against. Deposits are
-confirmed by webhook, and the order is completed from that webhook alone.
+<p><img src="https://raw.githubusercontent.com/codewithveek/medusa-payment-afriex/main/packages/plugin/medusa-afriex-plugin.png" alt="Medusa Afriex payment plugin" width="100%"></p>
 
-Built on [`@afriex/sdk`](https://www.npmjs.com/package/@afriex/sdk), which is a
-regular dependency and is never vendored — the installing project's version wins.
+Your shopper picks Afriex at checkout and gets a bank account number to pay
+into. When the transfer lands, Afriex tells your store, and the order is marked
+paid. No card form, no redirect, nothing for you to reconcile by hand.
+
+[Afriex API docs](https://docs.afriex.com) ·
+[Medusa payment docs](https://docs.medusajs.com/resources/commerce-modules/payment) ·
+[Example store and storefront](https://github.com/codewithveek/medusa-payment-afriex/tree/main/examples) ·
+[Report an issue](https://github.com/codewithveek/medusa-payment-afriex/issues)
+
+## What you get
+
+- **A virtual bank account per order.** Created for the exact order total, shown
+  to the shopper with its expiry time, and closed if the cart is abandoned or re-priced.
+- **Orders that pay themselves.** A verified Afriex webhook authorizes the
+  payment, captures it, and completes the cart. Nothing else can mark an order paid.
+- **Checkout that does not block.** The shopper can place the order first and
+  transfer afterwards. Medusa holds the order as awaiting payment until the money arrives.
+- **Wrong amounts caught, not captured.** An underpayment, overpayment, or wrong
+  currency is held for review instead of being accepted.
+- **No lost money.** A second transfer to a paid order, or a deposit that matches
+  no order, is recorded and logged loudly so you can refund it.
+- **An admin widget** on the order page: bank account, expected and received
+  amounts, Afriex transaction id, and anything that needs your attention.
+- **Safe to retry.** Afriex redelivers webhooks. Each event is processed once.
+
+## How it works
+
+1. **Checkout.** The shopper selects Afriex. The plugin asks Afriex for a virtual
+   account and hands your storefront the bank details to display.
+2. **Order placed.** The shopper can complete checkout before paying. The order
+   is created as _awaiting payment_.
+3. **Transfer lands.** Afriex sends a signed webhook. The plugin verifies the
+   signature, checks the amount, and marks the order paid.
+
+## Before you start
+
+You need:
+
+- A Medusa **v2.21 or newer** application, on **Node 20.19 or newer**, with Postgres.
+- An **Afriex Business account** with virtual accounts enabled. Afriex only creates
+  virtual accounts in **production**, so you need production access to take a
+  real payment. See [Testing](#testing) for what you can do before that.
+- A **public HTTPS URL** for your Medusa server, so Afriex can reach the webhook.
+  For local work, a tunnel such as [ngrok](https://ngrok.com) is enough.
 
 ---
 
-## How the payment actually flows
+## Setup
 
-Afriex bank collection is asynchronous. Nothing at checkout can tell you whether
-the shopper will complete the transfer, so the plugin does not pretend otherwise:
+Seven steps. Each one ends with what you should see, so you know it worked
+before moving on.
 
-1. **Checkout** — the shopper picks Afriex. `initiatePayment` creates the
-   account they will pay into and returns the details for the storefront to
-   render. The session sits at `pending`.
-2. **Place order** — the shopper can complete the cart before paying. The
-   provider returns `pending_authorization`, so Medusa creates the order in an
-   awaiting-payment state instead of blocking checkout on money that has not
-   moved yet.
-3. **Transfer lands** — Afriex sends `TRANSACTION.UPDATED`. The plugin verifies
-   the signature, checks the amount, asks Medusa to authorize, capture, and
-   complete the cart, and then confirms that a payment and an order actually
-   exist before it tells Afriex the event was handled.
+### Step 1. Get your two Afriex keys
 
-The webhook is the only thing that can mark an order paid. There is no "I have
-paid" button, no polling from the storefront, and no path where a shopper's
-claim moves payment state.
+Sign in to your Afriex Business dashboard.
 
----
+**The API key.** Go to **Developer → API keys** and create a key. Afriex keys are
+permission-scoped, so the key must be allowed to:
 
-## Install
+| The plugin does this                          | Afriex endpoint                                                       |
+| --------------------------------------------- | --------------------------------------------------------------------- |
+| Create and close virtual accounts             | `POST /payment-method/virtual-account`, `DELETE /payment-method/{id}` |
+| Read a payment method                         | `GET /payment-method/{id}`                                            |
+| Register and remove customers                 | `POST /customer`, `DELETE /customer/{id}`                             |
+| Read the pool account, only if you use `pool` | `GET /payment-method/pool-account`                                    |
+
+A key missing a permission fails with `401`, exactly like a wrong key. If
+checkout fails with an authentication error and the key looks right, check its
+permissions first.
+
+**The webhook public key.** Go to **Developers → Webhooks**. The public key is
+shown on that screen. Copy all of it, including the `-----BEGIN PUBLIC KEY-----`
+and `-----END PUBLIC KEY-----` lines. You will come back to this screen in Step 6
+to enter your webhook URL.
+
+> Staging and production have **different** API keys and **different** webhook
+> public keys. Use a matching pair. A production API key with the staging public
+> key creates accounts fine and then rejects every webhook.
+
+✅ **You should have:** one API key and one PEM public key, both from the same environment.
+
+### Step 2. Install the plugin
+
+Run this in your Medusa application's directory:
 
 ```bash
 npm install medusa-payment-afriex
 ```
 
-Requires Medusa `>= 2.21`, Node `>= 20.19`, and Postgres.
+✅ **You should see:** `medusa-payment-afriex` under `dependencies` in your `package.json`.
 
-> **Node floor.** `@afriex/sdk` ships as ESM and this plugin compiles to
-> CommonJS, so it relies on Node's `require(esm)` support — unflagged in Node
-> 20.19 and 22.12. Older Node will fail at load time.
+### Step 3. Add your environment variables
 
-### 1. Register the plugin and the provider
+In your Medusa app's `.env`:
+
+```bash
+AFRIEX_API_KEY=your_api_key
+AFRIEX_ENVIRONMENT=production   # or: staging
+AFRIEX_WEBHOOK_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqh...\n-----END PUBLIC KEY-----"
+```
+
+The public key spans several lines, and environment variables do not like that.
+Any of these forms works, because the plugin normalises them:
+
+- One line with `\n` where the line breaks were, in double quotes (shown above).
+  This is the form to use in hosting dashboards such as Railway, Render, or Vercel.
+- The key pasted as-is across several lines, inside double quotes.
+
+`AFRIEX_ENVIRONMENT` is required. The Afriex SDK silently falls back to
+production when it is missing, so the plugin makes you say it out loud.
+
+✅ **You should have:** three `AFRIEX_*` variables set.
+
+### Step 4. Register the plugin and the provider
+
+Both entries are needed. In `medusa-config.ts`:
 
 ```ts
-// medusa-config.ts
 module.exports = defineConfig({
-  plugins: ["medusa-payment-afriex"],
+  // ...
+  plugins: [
+    // brings in the webhook route, the admin widget, and the idempotency table
+    "medusa-payment-afriex",
+  ],
   modules: [
     {
       resolve: "@medusajs/payment",
       options: {
         providers: [
           {
+            // brings in the payment provider itself
             resolve: "medusa-payment-afriex/providers/afriex-payment",
             id: "afriex",
             options: {
               apiKey: process.env.AFRIEX_API_KEY,
-              environment: process.env.AFRIEX_ENVIRONMENT, // "staging" | "production" — required
+              environment: process.env.AFRIEX_ENVIRONMENT,
               webhookPublicKey: process.env.AFRIEX_WEBHOOK_PUBLIC_KEY,
-              collectionMethod:
-                process.env.AFRIEX_COLLECTION_METHOD ?? "dedicated",
-              defaultCountryCode: "NG",
             },
           },
         ],
@@ -77,202 +150,281 @@ module.exports = defineConfig({
 });
 ```
 
-Registering the plugin is what brings in the webhook route, the admin widget,
-the pruning job, and the table behind webhook idempotency. Registering only the
-provider gives you the payment methods without any of those.
-
-The provider refuses to start unless all three of these are right:
-
-- `apiKey` and `webhookPublicKey` are present. A provider that cannot verify a
-  signature can never safely confirm an order.
-- `webhookPublicKey` parses as a public key. The SDK would otherwise treat every
-  signature as invalid, and the only symptom would be Afriex retrying against a
-  401.
-- `environment` is exactly `"staging"` or `"production"`. The SDK defaults to
-  production when this is missing, so the plugin makes it an explicit decision.
-
-### 2. Run the migration
+Then create the plugin's one database table and start your server:
 
 ```bash
 npx medusa db:migrate
+npm run dev
 ```
 
-This creates `afriex_processed_webhook`, a single table in your own Medusa
-database. The plugin deliberately does not ask you to run Redis or any separate
-service just to deduplicate webhook deliveries. A scheduled job prunes rows
-older than 90 days every night at 03:00.
+✅ **You should see:** the server start with no Afriex errors. If a key is missing,
+malformed, or the environment is wrong, the provider refuses to start and the
+error names the option. That is deliberate. It is better than finding out from
+a failed payment.
 
-### 3. Point Afriex at the webhook
+### Step 5. Turn Afriex on for a region
 
-Register **one** URL in the Afriex dashboard:
+In the Medusa Admin:
+
+1. Go to **Settings → Regions** and open the region you sell in.
+2. Click the **⋯** menu, then **Edit**.
+3. In **Payment Providers**, select the Afriex provider. Its id is `pp_afriex_afriex`.
+4. **Save**.
+
+The region's currency decides who owns the virtual account. See
+[Currencies](#currencies).
+
+✅ **You should see:** Afriex listed under the region's payment providers.
+
+### Step 6. Give Afriex your webhook URL
+
+Back in the Afriex dashboard, under **Developers → Webhooks**, enter:
 
 ```
-https://your-store.com/afriex/webhook
+https://your-medusa-server.com/afriex/webhook
 ```
 
-Medusa's generic `/hooks/payment/afriex_afriex` endpoint exists on every Medusa
-server but **does not work for this provider**: capture is gated on a status
-that only the plugin's own route writes, so events sent there are verified and
-then go nowhere. Register `/afriex/webhook` only.
+Locally, run `ngrok http 9000` and use `https://<your-subdomain>.ngrok.app/afriex/webhook`.
 
----
+> Use this URL and only this URL. Every Medusa server also has a generic
+> `/hooks/payment/afriex_afriex` endpoint. It does **not** work for this
+> provider. Events sent there are verified and then go nowhere.
 
-## Collection methods
+✅ **You should see:** the URL saved in the Afriex dashboard. To prove Afriex can
+reach you, see [Testing](#testing).
 
-|                            | `dedicated`                                                    | `pool`                                      |
-| -------------------------- | -------------------------------------------------------------- | ------------------------------------------- |
-| Account                    | One virtual account per order, scoped to the exact total       | One standing account for the country        |
-| Shopper quotes a reference | No                                                             | **Yes — required**                          |
-| Expires                    | Yes — the instructions carry the minutes when Afriex reports them | No                                       |
-| Closed when the session ends | Yes, on cancel, delete, or a change of total                 | Never — shared infrastructure               |
-| Best for                   | Lower volume, where a wrong reference is the main failure mode | High volume, or shoppers who pay repeatedly |
-| Afriex customer            | One per shopper, reused across checkouts (see below)           | None                                        |
+### Step 7. Show the bank details in your storefront
 
-Both endpoints are production-only at Afriex, so neither can be exercised
-end-to-end in the sandbox.
+Three things happen in your checkout. This uses the
+[Medusa JS SDK](https://docs.medusajs.com/resources/js-sdk).
 
-### Afriex customers
+**Start the payment** when the shopper chooses Afriex:
 
-For dedicated accounts, the provider registers a logged-in shopper with Afriex
-once, as a Medusa **account holder**, and every later checkout reuses that
-customer. Within one session, a re-minted account (after the cart total
-changes) also reuses the customer the first account was created for.
+```ts
+const { payment_collection } = await sdk.store.payment.initiatePaymentSession(
+  cart,
+  {
+    provider_id: "pp_afriex_afriex",
+  }
+);
 
-Afriex requires an email and a phone number. A shopper without both — most
-guests — is not registered, and their virtual account is minted against the
-business instead. Nothing is sent with empty contact fields.
+const session = payment_collection.payment_sessions?.find(
+  (s) => s.provider_id === "pp_afriex_afriex"
+);
+const instructions = session?.data?.instructions;
+```
 
-### What the storefront receives
-
-`payment_session.data.instructions` is plain data, not markup — render it to fit
-your theme:
+**Show `instructions` to the shopper.** It is plain data, so you decide how it looks:
 
 ```jsonc
 {
   "bankName": "Providus Bank",
   "accountNumber": "0123456789",
   "accountName": "Afriex / Order",
-  "reference": "payses_01J...", // pool only
-  "note": "Include the reference exactly as shown when making your transfer.",
-  "expiresNote": "This account expires in 30 minutes — ...", // dedicated only
-  "expiresInMinutes": 30 // dedicated only, when Afriex reports it
+  "note": "This account is reserved for your order only. No reference needed.",
+  "expiresNote": "This account expires in 30 minutes — please complete your transfer before then.",
+  "expiresInMinutes": 30
 }
 ```
 
----
+**Place the order.** Do not wait for the money:
 
-## How a deposit is matched to an order
-
-The Medusa payment session id is set as the Afriex `reference` when the account
-is created, and Afriex echoes it back on every transaction. That is the primary
-thread from a deposit to its cart.
-
-For dedicated accounts there is a second one: the transaction names the account
-it landed in (`destinationId`), and the plugin remembers which session each
-account was minted for. If the reference is missing or garbled, the plugin
-looks the session up by account among that provider's sessions from the last
-seven days. Pool accounts are shared, so no such fallback exists for them — the
-reference is the only thing that attributes a pool deposit.
-
-An event that matches nothing is acknowledged and otherwise ignored. It is never
-applied to a best-guess order. If that event reports a **settled** deposit, it
-is logged at error level, because that is money the store holds with no order
-to attach it to.
-
-## When the amount does not match
-
-A settled deposit whose amount or currency differs from the session — under, over,
-or in the wrong currency — is **not** captured. The session is moved to
-`requires_more`, the discrepancy is written to the session data and the log, and
-the order waits for a human. The admin widget on the order page shows what was
-expected against what arrived, whether or not the order has a payment yet.
-
-## When more money arrives than the order needed
-
-Two settled transfers can land on one session: a shopper pays twice, or pays
-the wrong amount and then the right one. Neither extra deposit is lost. It is
-recorded on the session as an **extra deposit**, logged at error level, and
-listed in the admin widget with the transaction id, so it can be refunded.
-
-## Status mapping
-
-| Afriex                                                                         | Medusa session  | Effect                                                |
-| ------------------------------------------------------------------------------ | --------------- | ----------------------------------------------------- |
-| `PENDING`, `PROCESSING`, `RETRY`, `SCHEDULED`                                  | `pending`       | Recorded; an in-flight session's status is left alone |
-| `SUCCESS`                                                                      | `captured`      | Authorized, captured, cart completed                  |
-| `FAILED`, `REJECTED`                                                           | `error`         | Recorded, order left unpaid                           |
-| `CANCELLED`                                                                    | `canceled`      | Recorded                                              |
-| `IN_REVIEW`, `CUSTOMER_ACTION_REQUIRED`, `REFUNDED`, `UNKNOWN`, any `DISPUTE*` | `requires_more` | Flagged for a human                                   |
-| anything unrecognised                                                          | `pending`       | Never confirms, never fails                           |
-
-Once a session has recorded `SUCCESS` or an amount mismatch, no later progress
-event can move it back. Afriex delivers events in parallel and not always in
-order, and a `PROCESSING` that arrives after `SUCCESS` must not make Medusa
-defer a deposit that has already settled.
-
-## What the webhook route guarantees
-
-- **Nothing is read or written before the signature verifies.** The body is
-  parsed only to see whether it is a transaction event at all; the signature is
-  then checked against every registered Afriex provider before the reference
-  is used for anything. An unverified request never reaches the database.
-- **A reference is only ever a string.** Anything else in that field is
-  acknowledged and ignored, not passed to a lookup.
-- **Only a genuine miss is a miss.** If the session lookup fails for any other
-  reason, the route returns 500 so Afriex retries, rather than acknowledging an
-  event it could not act on.
-- **"Handled" means handled.** After the capture workflow runs, the route checks
-  that a payment now exists on the session and that the cart became an order.
-  If either is missing, it returns 500, releases its idempotency claim, and logs
-  at error level, so the retry gets another attempt and the failure is visible
-  each time. (Medusa itself would otherwise swallow a failed cart completion.)
-- **One capture per deposit.** Every delivery claims an id built from the
-  payload before it is processed; a redelivery is a no-op.
-
----
-
-## Limitations in v1
-
-- **No refunds.** `refundPayment` throws rather than silently succeeding. Refund
-  out of band and record it manually — including any extra deposits the widget
-  lists.
-- **Collection endpoints are production-only.** The full initiate → webhook →
-  capture path cannot be verified in the Afriex sandbox.
-- **Amounts are sent in major units** (`25000` meaning ₦25,000), matching
-  `transactions.create`. Confirm this against your own Afriex account before
-  going live with real money.
-- **Pool references are raw session ids** (`payses_01J...`), which are long and
-  contain an underscore. Some banks truncate or strip narration text. If your
-  shoppers' banks do, the account-id fallback does not help for pool accounts,
-  and the deposit will surface as an unmatched settled event in the log.
-
-## Deployment checklist
-
-- [ ] Plugin and provider both registered in `medusa-config.ts`
-- [ ] `AFRIEX_API_KEY`, `AFRIEX_WEBHOOK_PUBLIC_KEY`, and `AFRIEX_ENVIRONMENT` set
-- [ ] `npx medusa db:migrate` run
-- [ ] Collection method chosen for your volume and repeat rate
-- [ ] Exactly one webhook URL registered with Afriex: `/afriex/webhook`
-- [ ] Error-level log lines routed somewhere a person will see them (unmatched
-      settled deposits, extra deposits, and failed cart completions all land there)
-- [ ] Account creation confirmed against your real target countries
-- [ ] One live order run end to end before taking real customers
-
-## Development
-
-```bash
-pnpm install
-pnpm test        # vitest
-pnpm typecheck   # tsc --noEmit
-pnpm build       # medusa plugin:build
+```ts
+const result = await sdk.store.cart.complete(cart.id);
+// result.type === "order", and the order is awaiting payment
 ```
 
-Tests cover the invariants that matter rather than that functions return:
-one capture per deposit however many times it is delivered, no auto-capture on a
-mismatch, nothing read or written before a signature verifies, a settled session
-never downgraded by a straggling progress event, a second deposit recorded rather
-than lost, and a failed reconciliation releasing its idempotency claim so the
-retry still lands.
+Then send the shopper to a confirmation page that shows the same bank details
+and checks the order every few seconds:
+
+```ts
+const { order } = await sdk.store.order.retrieve(orderId, {
+  fields: "*payment_collections,*payment_collections.payment_sessions",
+});
+
+const collection = order.payment_collections?.[0];
+const paid = ["authorized", "captured", "completed"].includes(
+  collection?.status ?? ""
+);
+```
+
+Do not add an "I have paid" button. Nothing the shopper clicks can mark the order
+paid. Only Afriex's webhook can.
+
+✅ **You should see:** bank details at checkout, an order created as awaiting
+payment, and that order turning paid a few moments after the transfer lands.
+
+A complete working version of this is in
+[`examples/storefront`](https://github.com/codewithveek/medusa-payment-afriex/tree/main/examples/storefront).
+
+---
+
+## Testing
+
+Afriex creates virtual accounts in production only, so there are three levels of
+testing, from free to real.
+
+**1. Can Afriex reach me, and is my key right?** Works in staging. Ask Afriex to
+fire a signed test event at your registered webhook URL:
+
+```bash
+curl -X POST https://sandbox.api.afriex.com/api/v1/webhooks/trigger \
+  -H "x-api-key: $AFRIEX_API_KEY" -H "Content-Type: application/json" \
+  -d '{"event": "TRANSACTION.UPDATED", "entityId": "<any transaction id from your sandbox>"}'
+```
+
+Your Medusa log will show the event arriving. A `200` means the signature
+verified. It will say the session is unknown, which is correct for a test event.
+A `401` means your public key does not match the environment.
+
+**2. Does the whole order flow work, without moving money?** The repository
+includes a webhook simulator that signs events with a throwaway key, so you can
+pay, underpay, and double-pay an order on your own machine. See
+[Testing without real money](https://github.com/codewithveek/medusa-payment-afriex#testing-without-real-money).
+
+**3. One real order.** With production keys, place an order for a small amount
+and pay it. Watch the order turn paid and check the admin widget. Do this once
+before you take real customers.
+
+---
+
+## Options
+
+| Option               | Description                                                                         | Required | Default       |
+| -------------------- | ----------------------------------------------------------------------------------- | -------- | ------------- |
+| `apiKey`             | Your Afriex API key.                                                                | Yes      |               |
+| `environment`        | `"staging"` or `"production"`. Must match where the keys came from.                 | Yes      |               |
+| `webhookPublicKey`   | Afriex's PEM public key, used to verify every webhook.                              | Yes      |               |
+| `collectionMethod`   | `"dedicated"` for a virtual account per order. `"pool"` is experimental, see below. | No       | `"dedicated"` |
+| `defaultCountryCode` | Two-letter country used when the shopper has no saved billing address.              | No       | `"NG"`        |
+
+## Currencies
+
+Afriex opens a virtual account **for a customer** in NGN only. The plugin follows that:
+
+| Region currency                                    | Who owns the virtual account                                        |
+| -------------------------------------------------- | ------------------------------------------------------------------- |
+| NGN, and the shopper has an email and phone number | The shopper, registered with Afriex once and reused on later orders |
+| NGN, shopper has no phone number (most guests)     | Your business                                                       |
+| Any other currency                                 | Your business                                                       |
+
+Either way the shopper sees an account to pay into and the order is matched the
+same way. Whether Afriex can open a business virtual account in a given currency
+depends on your Afriex account, so confirm that for each currency you sell in.
+
+Afriex limits how many virtual accounts can be open at once per customer and
+currency. The plugin closes an account when its payment is cancelled, when
+Medusa deletes the payment session (an abandoned or changed cart), and when a
+new total needs a new account. An account that was paid into simply expires on
+Afriex's schedule. If you see `VIRTUAL_ACCOUNT_LIMIT_REACHED`, ask Afriex about
+your limit.
+
+## Collection methods
+
+**`dedicated` (default, recommended).** One virtual account per order, created for
+the exact total. The shopper needs no reference, and a deposit is matched to its
+order two independent ways: by the reference the plugin set, and by the account
+the money landed in.
+
+**`pool` (experimental, do not use for real orders yet).** Afriex's pool account is
+one shared account for your whole business. Afriex attributes each deposit using
+a `reference` that **Afriex assigns** and returns with the account. A reference
+you supply is accepted but ignored. This plugin currently tries to match pool
+deposits by the Medusa payment session id, which Afriex never receives, so a
+pool deposit cannot yet be tied back to its order. With `pool` selected, the
+shopper is shown the pool account, but nothing will mark the order paid
+automatically. It is kept behind an option for testing, and matching on Afriex's
+own reference is planned for a later version.
+
+## Payment statuses
+
+| Afriex says                                                                    | Medusa session becomes | What happens                                  |
+| ------------------------------------------------------------------------------ | ---------------------- | --------------------------------------------- |
+| `PENDING`, `PROCESSING`, `RETRY`, `SCHEDULED`                                  | `pending`              | Noted. The order keeps waiting.               |
+| `SUCCESS`                                                                      | `captured`             | Amount checked, payment captured, order paid. |
+| `FAILED`, `REJECTED`                                                           | `error`                | Noted. The order stays unpaid.                |
+| `CANCELLED`                                                                    | `canceled`             | Noted.                                        |
+| `IN_REVIEW`, `CUSTOMER_ACTION_REQUIRED`, `REFUNDED`, `UNKNOWN`, any `DISPUTE*` | `requires_more`        | Flagged for a person.                         |
+| Anything else                                                                  | `pending`              | Never confirms an order, never fails one.     |
+
+Once an order has settled, a late or out-of-order `PROCESSING` event cannot
+un-pay it.
+
+## When things do not go to plan
+
+**The amount is wrong.** A settled transfer that is short, over, or in the wrong
+currency is not captured. The session moves to `requires_more`, and the admin
+widget shows expected against received so you can decide what to do.
+
+**The shopper pays twice.** The second transfer is recorded as an _extra deposit_
+with its transaction id, logged at error level, and listed in the admin widget as
+needing a refund. The same happens to a wrong-amount transfer that the shopper
+then corrects with a second one.
+
+**A deposit matches no order.** It is acknowledged so Afriex stops retrying, and
+changes nothing. If that deposit had _settled_, it is logged at error level,
+because that is money you hold with no order attached.
+
+**Something fails on your side.** If the database is down, or the payment was
+captured but the cart would not complete into an order, the plugin answers `500`.
+Afriex retries for up to about a day and a half, and each attempt is logged at
+error level.
+
+Send error-level logs somewhere a person will see them. Every case above that
+needs a human ends up there.
+
+## Troubleshooting
+
+| What you see                                                                              | Likely cause                                                                                                                                                         | Fix                                                                                                                             |
+| ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Server will not start: _`environment` is required_ or _must be "staging" or "production"_ | `AFRIEX_ENVIRONMENT` is missing or misspelled                                                                                                                        | Set it to exactly `staging` or `production`.                                                                                    |
+| Server will not start: _`webhookPublicKey` is not a valid public key_                     | The key was cut short, or the `BEGIN`/`END` lines are missing                                                                                                        | Copy the whole key again and wrap it in double quotes.                                                                          |
+| Checkout fails: _Afriex payment initiation failed_                                        | Using staging keys (virtual accounts are production-only), a key without the right permissions, or a currency or country your Afriex account cannot open accounts in | The real Afriex error is in your Medusa log, at error level.                                                                    |
+| Webhook returns `401`                                                                     | The public key is from the other environment, or a proxy is rewriting the request body                                                                               | Use the public key that matches your API key's environment. Make sure nothing between Afriex and Medusa re-serialises the JSON. |
+| Webhook returns `404`                                                                     | The plugin is registered as a provider but not under `plugins`                                                                                                       | Add `"medusa-payment-afriex"` to `plugins`, as in Step 4.                                                                       |
+| Webhook returns `200` with `unknown_session`, order stays unpaid                          | The event is for something else, or for a payment session Medusa has since deleted because the cart changed                                                          | Check the log line for the transaction id. If it says the deposit has settled, that money needs matching by hand.               |
+| Order stays unpaid and no webhook arrives                                                 | Afriex cannot reach your server, or the URL was saved in the other environment's dashboard                                                                           | Re-check Step 6. Test with level 1 under [Testing](#testing).                                                                   |
+| Afriex is missing from the region's provider list                                         | The provider did not load                                                                                                                                            | Check Step 4 and the server's startup log.                                                                                      |
+
+## Limitations
+
+- **No refunds through Medusa.** Refunding from the admin throws an error rather
+  than pretending to succeed. Refund from Afriex and record it on the order.
+- **`pool` is experimental** and will not mark orders paid. See [Collection methods](#collection-methods).
+- **Production-only accounts.** The full flow cannot run against Afriex's sandbox.
+- **Amounts are in major units.** `25000` means ₦25,000. Confirm this matches your
+  Afriex account with one small real order before going live.
+
+## Going live
+
+- [ ] Production API key and production webhook public key, from the same dashboard
+- [ ] `AFRIEX_ENVIRONMENT=production`
+- [ ] `"medusa-payment-afriex"` under `plugins` **and** the provider under `@medusajs/payment`
+- [ ] `npx medusa db:migrate` run on the production database
+- [ ] Afriex enabled in every region you sell in
+- [ ] `https://your-server/afriex/webhook` saved in the **production** Afriex dashboard, and no other URL
+- [ ] Error-level logs go somewhere a person will see them
+- [ ] One real, small order placed and paid end to end
+
+## What the plugin adds to your Medusa app
+
+| Piece            | What it is                                                                  |
+| ---------------- | --------------------------------------------------------------------------- |
+| Payment provider | `pp_afriex_afriex`, selectable per region                                   |
+| API route        | `POST /afriex/webhook`                                                      |
+| Database table   | `afriex_processed_webhook`, which makes webhook handling run once per event |
+| Scheduled job    | Nightly at 03:00, removes processed-webhook rows older than 90 days         |
+| Admin widget     | On the order details page                                                   |
+
+No Redis and no extra services. Everything lives in your Medusa database.
+
+## Contributing and support
+
+Bugs and requests: [open an issue](https://github.com/codewithveek/medusa-payment-afriex/issues).
+To work on the plugin, the [repository README](https://github.com/codewithveek/medusa-payment-afriex#readme)
+covers running the example store, the tests, and the webhook simulator.
+
+Built on [`@afriex/sdk`](https://www.npmjs.com/package/@afriex/sdk).
 
 ## License
 

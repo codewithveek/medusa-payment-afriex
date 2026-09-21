@@ -12,6 +12,7 @@
     "dev": "medusa develop",
     "start": "medusa start",
     "seed": "medusa exec ./src/scripts/seed.ts",
+    "afriex:sessions": "medusa exec ./src/scripts/afriex-sessions.ts",
     "db:migrate": "medusa db:migrate",
     "db:up": "docker compose up -d --wait",
     "db:down": "docker compose down",

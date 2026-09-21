@@ -17,6 +17,8 @@
     "plugin:dev": "pnpm --filter medusa-payment-afriex run dev",
     "backend:dev": "pnpm --filter @afriex/example-medusa-backend run dev",
     "storefront:dev": "pnpm --filter @afriex/example-storefront run dev",
+    "webhook:keygen": "node scripts/afriex-webhook.mjs keygen",
+    "webhook:send": "node scripts/afriex-webhook.mjs send",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "pnpm run build --filter \"./packages/*\" && changeset publish"

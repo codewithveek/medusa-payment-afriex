@@ -50,7 +50,7 @@ export async function loader({ params }: Route.LoaderArgs) {
     // Medusa's. Either flipping means the webhook landed.
     paid:
       PAID_STATUSES.includes(collection?.status ?? "") ||
-      (data.currentStatus ?? "").toUpperCase() === "COMPLETED",
+      (data.currentStatus ?? "").toUpperCase() === "SUCCESS",
     amountMismatch: (data.currentStatus ?? "") === "AMOUNT_MISMATCH",
     instructions: data.instructions ?? null,
   }
