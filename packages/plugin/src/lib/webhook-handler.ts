@@ -445,7 +445,9 @@ async function decide(
       "requires_more"
     )
 
-    logger.warn(
+    // Error level, like the other held cases: this is money the store holds
+    // that no one will look at unless a person is told.
+    logger.error(
       `Afriex deposit for session ${session.id} did not match: expected ${expectedAmount} ${expectedCurrency}, received ${receivedAmount} ${receivedCurrency}. Left for manual review.`
     )
 

@@ -13,7 +13,11 @@ export const CheckoutErrorCode = {
   METHOD_UNAVAILABLE: "AFRIEX_METHOD_UNAVAILABLE",
   EMAIL_REQUIRED: "AFRIEX_CHECKOUT_EMAIL_REQUIRED",
   PHONE_REQUIRED: "AFRIEX_CHECKOUT_PHONE_REQUIRED",
-  /** `checkout.returnUrl` is not set in medusa-config. */
+  /**
+   * The store cannot take checkout payments: `checkout.returnUrl` is not set in
+   * medusa-config, or Afriex does not let the store's account create checkout
+   * sessions.
+   */
   NOT_CONFIGURED: "AFRIEX_CHECKOUT_NOT_CONFIGURED",
   RETURN_URL_NOT_ALLOWED: "AFRIEX_RETURN_URL_NOT_ALLOWED",
   /** The order's currency or amount cannot be collected through checkout. */

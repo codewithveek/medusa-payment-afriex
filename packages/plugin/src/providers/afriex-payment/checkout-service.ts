@@ -391,6 +391,37 @@ class AfriexCheckoutService extends AfriexProviderBase {
       )
     }
 
+    if (status === 403 || status === 404) {
+      // The endpoint is not there for this store: a route or version the
+      // installed SDK no longer matches, or an account that may not use it.
+      // Asking again will not change that, so the shopper is sent elsewhere
+      // rather than told to try again.
+      this.logger_.error(
+        `Afriex answered HTTP ${status}${
+          failure.errorCode ? ` ${failure.errorCode}` : ""
+        } to POST /checkout-session, with an API key it accepted. Retrying will not help. Check that medusa-payment-afriex and @afriex/sdk are up to date, and that your Afriex account can create checkout sessions. Until it works, turn Afriex Checkout off in your regions.`
+      )
+      return checkoutRefusal(
+        CheckoutErrorCode.NOT_CONFIGURED,
+        "This payment option isn't available right now. Please choose another payment method."
+      )
+    }
+
+    if (status === 409) {
+      // Afriex already has a live session for this reference and does not
+      // return its link, so this one cannot be recovered. Every attempt gets a
+      // new Medusa session, and so a new reference: trying again works.
+      this.logger_.error(
+        `Afriex already has an active checkout session for reference ${sessionId}${
+          failure.errorCode ? ` (${failure.errorCode})` : ""
+        }. Its link is not in this answer, so it cannot be reused. The next attempt will use a new reference.`
+      )
+      return checkoutFailure(
+        CheckoutErrorCode.TEMPORARILY_UNAVAILABLE,
+        "Payment could not be started. Please try again."
+      )
+    }
+
     if (status === 422) {
       return checkoutRefusal(
         CheckoutErrorCode.UNAVAILABLE_FOR_CURRENCY,

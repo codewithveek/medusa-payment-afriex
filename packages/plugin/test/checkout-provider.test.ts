@@ -291,6 +291,54 @@ describe("the checkout provider", () => {
       expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/checkout-session permission/))
     })
 
+    it("does not tell the shopper to try again when the endpoint is not there for this store", async () => {
+      for (const failure of [
+        new ApiError({ code: "NOT_FOUND_ERROR", error: "Page not found" }, 404),
+        new ApiError({ code: "FORBIDDEN", error: "Forbidden" }, 403),
+      ]) {
+        sdk.checkout.createSession.mockRejectedValueOnce(failure)
+
+        const error = await refusal(buildService().initiatePayment(input(PAY)))
+
+        expect(error).toMatchObject({ type: "not_allowed", code: "AFRIEX_CHECKOUT_NOT_CONFIGURED" })
+        expect(error.message).not.toMatch(/try again/i)
+      }
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringMatching(/HTTP 404 NOT_FOUND_ERROR.*Retrying will not help/s)
+      )
+      expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/HTTP 403 FORBIDDEN/))
+      expect(eventBus.emit).not.toHaveBeenCalled()
+    })
+
+    it("lets the shopper retry when Afriex says the reference is already in use", async () => {
+      // Afriex's own answer: 409 DUPLICATE_REQUEST, "A checkout session with
+      // merchantReference … is already active". The link is not in the body,
+      // and the next attempt gets a new session id, so retrying is right.
+      sdk.checkout.createSession.mockRejectedValueOnce(
+        new ApiError(
+          {
+            code: "DUPLICATE_REQUEST",
+            error: "Duplicate request",
+            details: {
+              errorMessage: "Duplicate request",
+              friendlyMessage: 'A checkout session with merchantReference "payses_01" is already active',
+            },
+          },
+          409
+        )
+      )
+
+      const error = await refusal(buildService().initiatePayment(input(PAY)))
+
+      expect(error).toMatchObject({
+        type: "unexpected_state",
+        code: "AFRIEX_CHECKOUT_TEMPORARILY_UNAVAILABLE",
+      })
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringMatching(/already has an active checkout session for reference/)
+      )
+    })
+
     it("treats an outage, a timeout or its own SDK's refusal as try-again", async () => {
       for (const failure of [
         new ApiError({}, 503),
