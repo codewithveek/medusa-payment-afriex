@@ -30,9 +30,17 @@ export default defineConfig({
               apiKey: process.env.AFRIEX_API_KEY,
               environment: process.env.AFRIEX_ENVIRONMENT ?? "staging",
               webhookPublicKey: process.env.AFRIEX_WEBHOOK_PUBLIC_KEY,
-              collectionMethod:
-                process.env.AFRIEX_COLLECTION_METHOD ?? "dedicated",
               defaultCountryCode: process.env.AFRIEX_DEFAULT_COUNTRY ?? "NG",
+              // Afriex hosted checkout. Without a return URL, checkout refuses
+              // to start and bank transfer works as before.
+              checkout: process.env.AFRIEX_CHECKOUT_RETURN_URL
+                ? {
+                    returnUrl: process.env.AFRIEX_CHECKOUT_RETURN_URL,
+                    allowedReturnOrigins: process.env.AFRIEX_CHECKOUT_ALLOWED_RETURN_ORIGINS
+                      ? process.env.AFRIEX_CHECKOUT_ALLOWED_RETURN_ORIGINS.split(",")
+                      : undefined,
+                  }
+                : undefined,
             },
           },
         ],

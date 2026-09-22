@@ -1,5 +1,10 @@
 import type { PaymentSessionStatus } from "@medusajs/framework/types"
-import { AFRIEX_AMOUNT_MISMATCH } from "./constants"
+import {
+  AFRIEX_AMOUNT_MISMATCH,
+  AFRIEX_COLLECTION_AMOUNT_CHANGED,
+  AFRIEX_SETTLED_AFTER_CANCEL,
+  type AfriexMethod,
+} from "./constants"
 
 /**
  * Afriex's transaction status vocabulary → Medusa's payment session status.
@@ -13,8 +18,23 @@ import { AFRIEX_AMOUNT_MISMATCH } from "./constants"
  * deposit whose amount did not match — maps to `requires_more`, which is how
  * Medusa marks a session that cannot proceed on its own.
  */
+export function mapAfriexStatus(
+  afriexStatus: string | null | undefined,
+  method: AfriexMethod
+): PaymentSessionStatus {
+  // On the hosted checkout page, mobile money waits here while the shopper
+  // approves the prompt or enters the code on Afriex's page. That is a normal
+  // step of paying, not something a person has to review.
+  if (method === "checkout" && afriexStatus === "CUSTOMER_ACTION_REQUIRED") {
+    return "pending"
+  }
+
+  return mapAfriexStatusToMedusaStatus(afriexStatus)
+}
+
+/** The bank-transfer mapping, which is also the default for every method. */
 export function mapAfriexStatusToMedusaStatus(
-  afriexStatus: string | undefined
+  afriexStatus: string | null | undefined
 ): PaymentSessionStatus {
   switch (afriexStatus) {
     case "PENDING":
@@ -45,6 +65,8 @@ export function mapAfriexStatusToMedusaStatus(
     case "DISPUTE_WON":
     case "DISPUTE_LOST":
     case AFRIEX_AMOUNT_MISMATCH:
+    case AFRIEX_SETTLED_AFTER_CANCEL:
+    case AFRIEX_COLLECTION_AMOUNT_CHANGED:
       return "requires_more"
 
     default:
@@ -73,5 +95,10 @@ export function isTerminalFailure(afriexStatus: string | undefined): boolean {
  * `authorizePayment` defer a deposit that has in fact settled.
  */
 export function isFinalRecordedStatus(afriexStatus: string | undefined): boolean {
-  return afriexStatus === "SUCCESS" || afriexStatus === AFRIEX_AMOUNT_MISMATCH
+  return (
+    afriexStatus === "SUCCESS" ||
+    afriexStatus === AFRIEX_AMOUNT_MISMATCH ||
+    afriexStatus === AFRIEX_SETTLED_AFTER_CANCEL ||
+    afriexStatus === AFRIEX_COLLECTION_AMOUNT_CHANGED
+  )
 }

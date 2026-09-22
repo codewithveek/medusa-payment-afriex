@@ -1,6 +1,23 @@
 import type { MedusaContainer } from "@medusajs/framework/types"
 import { AFRIEX_WEBHOOK_MODULE } from "../modules/afriex-webhook"
 import type AfriexWebhookModuleService from "../modules/afriex-webhook/service"
+import { isUniqueViolation } from "./db-errors"
+
+/**
+ * How long a claim may stay unfinished before a redelivery may take it over.
+ * Far longer than any real reconciliation, which is bounded by the lock and
+ * workflow timeouts; a claim this old belongs to a process that died.
+ */
+const STALE_CLAIM_MS = 5 * 60 * 1000
+
+/**
+ * - `claimed`: this delivery owns the event and must process it.
+ * - `duplicate`: an earlier delivery already processed it.
+ * - `in_progress`: an earlier delivery is processing it right now. Answering
+ *   200 here would end Afriex's retries while that attempt can still fail, so
+ *   the caller answers with a retryable error instead.
+ */
+export type ClaimResult = "claimed" | "duplicate" | "in_progress"
 
 function resolveStore(container: MedusaContainer): AfriexWebhookModuleService {
   return container.resolve(AFRIEX_WEBHOOK_MODULE)
@@ -12,24 +29,56 @@ function resolveStore(container: MedusaContainer): AfriexWebhookModuleService {
  * close enough together to both pass a read-then-write check — the unique
  * constraint on `event_id` is what actually makes this safe, so the insert has
  * to happen first and its failure is the signal.
- *
- * Returns false when the event was already claimed by an earlier delivery.
  */
 export async function claimEvent(
   container: MedusaContainer,
   eventId: string
-): Promise<boolean> {
-  try {
-    await resolveStore(container).createProcessedWebhooks({
-      event_id: eventId,
-      processed_at: new Date(),
-    })
-    return true
-  } catch (error) {
-    if (isUniqueViolation(error)) {
-      return false
-    }
-    throw error
+): Promise<ClaimResult> {
+  const store = resolveStore(container)
+
+  if (await tryInsert(store, eventId)) {
+    return "claimed"
+  }
+
+  const [existing] = await store.listProcessedWebhooks(
+    { event_id: eventId },
+    { take: 1 }
+  )
+
+  if (!existing) {
+    // Released between the insert and this read: the other attempt failed a
+    // moment ago. Let Afriex's next retry claim it cleanly.
+    return "in_progress"
+  }
+
+  if (existing.completed_at) {
+    return "duplicate"
+  }
+
+  if (Date.now() - new Date(existing.processed_at).getTime() < STALE_CLAIM_MS) {
+    return "in_progress"
+  }
+
+  // The delivery that claimed this event died without finishing or releasing
+  // it. Take it over; the unique constraint still decides between two
+  // redeliveries racing to do the same.
+  await store.deleteProcessedWebhooks(existing.id)
+  return (await tryInsert(store, eventId)) ? "claimed" : "in_progress"
+}
+
+/** Marks a claimed event as fully processed, so later redeliveries are duplicates. */
+export async function completeClaim(
+  container: MedusaContainer,
+  eventId: string
+): Promise<void> {
+  const store = resolveStore(container)
+  const [claimed] = await store.listProcessedWebhooks(
+    { event_id: eventId },
+    { take: 1 }
+  )
+
+  if (claimed) {
+    await store.updateProcessedWebhooks({ id: claimed.id, completed_at: new Date() })
   }
 }
 
@@ -53,19 +102,20 @@ export async function releaseClaim(
   }
 }
 
-function isUniqueViolation(error: unknown): boolean {
-  const code = (error as { code?: string })?.code
-  const message = (error as { message?: string })?.message ?? ""
-
-  // 23505 is Postgres' unique_violation; MikroORM surfaces it as a
-  // UniqueConstraintViolationException whose message keeps the constraint name.
-  // Medusa's generated module service catches both and rethrows a MedusaError
-  // reading "... with event_id: <id>, already exists.", which keeps neither —
-  // so that phrasing has to be matched too or a redelivery escapes as a 400 and
-  // Afriex retries it forever. The only unique column on this table is
-  // `event_id`, so nothing else can produce it here.
-  return (
-    code === "23505" ||
-    /unique constraint|duplicate key|already exists/i.test(message)
-  )
+async function tryInsert(
+  store: AfriexWebhookModuleService,
+  eventId: string
+): Promise<boolean> {
+  try {
+    await store.createProcessedWebhooks({
+      event_id: eventId,
+      processed_at: new Date(),
+    })
+    return true
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      return false
+    }
+    throw error
+  }
 }

@@ -10,7 +10,7 @@ vi.mock("@medusajs/medusa/core-flows", () => ({
   // what Medusa would actually have left behind.
   processPaymentWorkflow: vi.fn((container: any) => ({
     run: async (...args: unknown[]) => {
-      container.completeWorkflow?.()
+      await container.completeWorkflow?.()
       return runWorkflow(...(args as []))
     },
   })),
@@ -19,7 +19,9 @@ vi.mock("@medusajs/medusa/core-flows", () => ({
 import { processAfriexWebhook } from "../src/lib/webhook-handler"
 import {
   buildTransactionPayload,
+  CHECKOUT_PROVIDER_ID,
   createMockContainer,
+  PAYMENT_COLLECTION_ID,
   PROVIDER_ID,
   SESSION_ID,
 } from "./mocks/afriex.mock"
@@ -148,6 +150,31 @@ describe("Afriex webhook handling", () => {
       expect(container.paymentModule.retrievePaymentSession).toHaveBeenCalledWith(SESSION_ID)
     })
 
+    describe("with bank transfer and checkout sharing one Afriex webhook key", () => {
+      const orders = [
+        [PROVIDER_ID, CHECKOUT_PROVIDER_ID],
+        [CHECKOUT_PROVIDER_ID, PROVIDER_ID],
+      ]
+
+      for (const listed of orders) {
+        for (const owner of [PROVIDER_ID, CHECKOUT_PROVIDER_ID]) {
+          it(`settles a ${owner} session when the providers are listed as ${listed.join(", ")}`, async () => {
+            const container = createMockContainer({ providers: ["pp_stripe_stripe", ...listed] })
+            container.session.provider_id = owner
+            const body = JSON.stringify(buildTransactionPayload())
+
+            const result = await processAfriexWebhook(asContainer(container), body, {})
+
+            expect(result.outcome).toBe("captured")
+            const tried = container.paymentModule.getWebhookActionAndData.mock.calls.map(
+              ([call]) => call.provider
+            )
+            expect(tried.sort()).toEqual(["afriex-checkout_afriex", "afriex_afriex"])
+          })
+        }
+      }
+    })
+
     it("rejects an event signed for one registration but aimed at another registration's session", async () => {
       const container = createMockContainer()
       container.session.provider_id = "pp_afriex_other"
@@ -253,9 +280,44 @@ describe("Afriex webhook handling", () => {
 
       expect(result.outcome).toBe("captured")
       expect(container.paymentModule.listPaymentSessions).toHaveBeenCalledWith(
-        expect.objectContaining({ provider_id: PROVIDER_ID }),
+        expect.objectContaining({ provider_id: [PROVIDER_ID] }),
         expect.anything()
       )
+    })
+
+    it("scans only bank-transfer sessions when falling back by account, since only they own an account", async () => {
+      const container = createMockContainer({
+        providers: [CHECKOUT_PROVIDER_ID, PROVIDER_ID],
+      })
+      container.paymentModule.retrievePaymentSession.mockRejectedValueOnce(
+        new MedusaError(MedusaError.Types.NOT_FOUND, "not found")
+      )
+      const body = JSON.stringify(
+        buildTransactionPayload({ merchantReference: "garbled", meta: {}, destinationId: "pm_virtual_1" })
+      )
+
+      const result = await processAfriexWebhook(asContainer(container), body, {})
+
+      expect(result.outcome).toBe("captured")
+      expect(container.paymentModule.listPaymentSessions).toHaveBeenCalledWith(
+        expect.objectContaining({ provider_id: [PROVIDER_ID] }),
+        expect.anything()
+      )
+    })
+
+    it("does not fall back by account at all when no bank-transfer provider is registered", async () => {
+      const container = createMockContainer({ providers: [CHECKOUT_PROVIDER_ID] })
+      container.paymentModule.retrievePaymentSession.mockRejectedValueOnce(
+        new MedusaError(MedusaError.Types.NOT_FOUND, "not found")
+      )
+      const body = JSON.stringify(
+        buildTransactionPayload({ merchantReference: "garbled", meta: {}, destinationId: "pm_virtual_1" })
+      )
+
+      const result = await processAfriexWebhook(asContainer(container), body, {})
+
+      expect(result.outcome).toBe("unknown_session")
+      expect(container.paymentModule.listPaymentSessions).not.toHaveBeenCalled()
     })
 
     it("recognises the account whether the deposit names it as its source or its destination", async () => {
@@ -277,8 +339,8 @@ describe("Afriex webhook handling", () => {
       expect(result.outcome).toBe("captured")
     })
 
-    it("does not fall back by account for a pool account, which every shopper shares", async () => {
-      const container = createMockContainer({ sessionData: { collectionMethod: "pool" } })
+    it("does not fall back by account to a session whose account was not minted for it", async () => {
+      const container = createMockContainer({ sessionData: { collectionMethod: undefined } })
       container.paymentModule.retrievePaymentSession.mockRejectedValueOnce(
         new MedusaError(MedusaError.Types.NOT_FOUND, "not found")
       )
@@ -397,6 +459,74 @@ describe("Afriex webhook handling", () => {
       expect(container.logger.error).toHaveBeenCalledWith(expect.stringMatching(/refund/i))
     })
 
+    it("captures once and records the other as an extra deposit when two different transfers settle at the same moment", async () => {
+      const container = createMockContainer()
+      const first = JSON.stringify(buildTransactionPayload({ transactionId: "txn_1" }))
+      const second = JSON.stringify(
+        buildTransactionPayload({ transactionId: "txn_2", updatedAt: "2026-09-16T10:05:01.000Z" })
+      )
+
+      const results = await Promise.all([
+        processAfriexWebhook(asContainer(container), first, {}),
+        processAfriexWebhook(asContainer(container), second, {}),
+      ])
+
+      expect(results.map((r) => r.outcome).sort()).toEqual(["captured", "extra_deposit"])
+      expect(runWorkflow).toHaveBeenCalledTimes(1)
+      expect(container.session.data.extraDeposits).toHaveLength(1)
+      expect(container.locking.execute).toHaveBeenCalledWith(
+        `afriex:payment-collection:${PAYMENT_COLLECTION_ID}`,
+        expect.any(Function),
+        expect.objectContaining({ timeout: expect.any(Number) })
+      )
+    })
+
+    it("keeps an extra deposit recorded while the first capture is still running", async () => {
+      const container = createMockContainer()
+      // Medusa's authorization reads the session data when it starts and writes
+      // that snapshot back when it finishes. Anything written in between is lost
+      // unless nothing else can write in between.
+      const finish = container.completeWorkflow
+      container.completeWorkflow = async () => {
+        const snapshot = { ...container.session.data }
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        container.session.data = snapshot
+        finish()
+      }
+      const first = JSON.stringify(buildTransactionPayload({ transactionId: "txn_1" }))
+      const second = JSON.stringify(
+        buildTransactionPayload({ transactionId: "txn_2", updatedAt: "2026-09-16T10:05:01.000Z" })
+      )
+
+      const firstDelivery = processAfriexWebhook(asContainer(container), first, {})
+      await new Promise((resolve) => setTimeout(resolve, 1))
+      const results = await Promise.all([
+        firstDelivery,
+        processAfriexWebhook(asContainer(container), second, {}),
+      ])
+
+      expect(results.map((r) => r.outcome).sort()).toEqual(["captured", "extra_deposit"])
+      expect(container.session.data.extraDeposits).toEqual([
+        expect.objectContaining({ transactionId: "txn_2" }),
+      ])
+    })
+
+    it("records money paid through a second session of an already-paid collection as an extra deposit", async () => {
+      const container = createMockContainer({
+        siblingSessions: [{ id: "payses_other", payment: { id: "pay_0" } }],
+      })
+      const body = JSON.stringify(buildTransactionPayload())
+
+      const result = await processAfriexWebhook(asContainer(container), body, {})
+
+      expect(result.outcome).toBe("extra_deposit")
+      expect(runWorkflow).not.toHaveBeenCalled()
+      expect(container.session.data.extraDeposits).toEqual([
+        expect.objectContaining({ transactionId: "txn_1" }),
+      ])
+      expect(container.logger.error).toHaveBeenCalledWith(expect.stringMatching(/another session/))
+    })
+
     it("re-runs an idempotent capture when the same settled transaction is delivered again under a new event id", async () => {
       const container = createMockContainer({
         sessionData: { currentStatus: "SUCCESS", afriexTransactionId: "txn_1" },
@@ -430,6 +560,151 @@ describe("Afriex webhook handling", () => {
       expect(container.session.data.extraDeposits).toEqual([
         expect.objectContaining({ transactionId: "txn_1", amount: "20000.00" }),
       ])
+    })
+  })
+
+  describe("after the order total changed", () => {
+    it("holds a deposit sized for the old total instead of capturing it", async () => {
+      const container = createMockContainer({ sessionAmount: 25000, collectionAmount: 30000 })
+      const body = JSON.stringify(buildTransactionPayload())
+
+      const result = await processAfriexWebhook(asContainer(container), body, {})
+
+      expect(result.outcome).toBe("collection_amount_changed")
+      expect(runWorkflow).not.toHaveBeenCalled()
+      expect(container.session.status).toBe("requires_more")
+      expect(container.session.data).toMatchObject({
+        currentStatus: "COLLECTION_AMOUNT_CHANGED",
+        receivedAmount: "25000.00",
+      })
+      expect(container.logger.error).toHaveBeenCalledWith(expect.stringMatching(/25000 to 30000/))
+    })
+
+    it("still treats a redelivery for an order paid before the edit as already captured", async () => {
+      const container = createMockContainer({
+        sessionAmount: 25000,
+        collectionAmount: 30000,
+        sessionStatus: "captured",
+        sessionData: { currentStatus: "SUCCESS", afriexTransactionId: "txn_1", receivedAmount: "25000.00" },
+      })
+      const body = JSON.stringify(
+        buildTransactionPayload({ updatedAt: "2026-09-16T11:00:00.000Z" }, "TRANSACTION.CREATED")
+      )
+
+      const result = await processAfriexWebhook(asContainer(container), body, {})
+
+      expect(result.outcome).toBe("captured")
+      expect(container.session.data.currentStatus).toBe("SUCCESS")
+    })
+  })
+
+  describe("after the order was cancelled", () => {
+    it("holds a deposit that settles on a cancelled order instead of capturing it", async () => {
+      const container = createMockContainer({ collectionStatus: "canceled" })
+      const body = JSON.stringify(buildTransactionPayload())
+
+      const result = await processAfriexWebhook(asContainer(container), body, {})
+
+      expect(result.outcome).toBe("settled_after_cancel")
+      expect(runWorkflow).not.toHaveBeenCalled()
+      expect(container.session.status).toBe("requires_more")
+      expect(container.session.data).toMatchObject({
+        currentStatus: "SETTLED_AFTER_CANCEL",
+        receivedAmount: "25000.00",
+        afriexTransactionId: "txn_1",
+      })
+      expect(container.logger.error).toHaveBeenCalledWith(expect.stringMatching(/cancelled.*refund/i))
+    })
+
+    it("holds a deposit when the order was cancelled, even if the collection no longer says so", async () => {
+      // Authorizing any session recomputes the collection's status, which
+      // overwrites "canceled" with "awaiting". The order still says cancelled.
+      const container = createMockContainer({
+        orderPlaced: true,
+        orderStatus: "canceled",
+        collectionStatus: "awaiting",
+      })
+      const body = JSON.stringify(buildTransactionPayload())
+
+      const result = await processAfriexWebhook(asContainer(container), body, {})
+
+      expect(result.outcome).toBe("settled_after_cancel")
+      expect(runWorkflow).not.toHaveBeenCalled()
+      expect(container.session.data.currentStatus).toBe("SETTLED_AFTER_CANCEL")
+    })
+
+    it("flags a capture that landed after the order was cancelled mid-way", async () => {
+      // The order was open when the deposit was checked; the admin cancelled
+      // it while the capture ran.
+      const container = createMockContainer({ orderPlaced: true })
+      const finish = container.completeWorkflow
+      container.completeWorkflow = () => {
+        container.order.status = "canceled"
+        finish()
+      }
+      const body = JSON.stringify(buildTransactionPayload())
+
+      const result = await processAfriexWebhook(asContainer(container), body, {})
+
+      expect(result.outcome).toBe("settled_after_cancel")
+      expect(runWorkflow).toHaveBeenCalledTimes(1)
+      expect(container.session.data.currentStatus).toBe("SETTLED_AFTER_CANCEL")
+      expect(container.session.status).toBe("authorized")
+      expect(container.logger.error).toHaveBeenCalledWith(expect.stringMatching(/cancelled.*refund/i))
+    })
+
+    it("does not flag a redelivery for an order that was paid first and cancelled later", async () => {
+      const container = createMockContainer({
+        sessionStatus: "captured",
+        sessionData: { currentStatus: "SUCCESS", afriexTransactionId: "txn_1", receivedAmount: "25000.00" },
+        collectionStatus: "canceled",
+        orderStatus: "canceled",
+      })
+      const body = JSON.stringify(
+        buildTransactionPayload({ updatedAt: "2026-09-16T11:00:00.000Z" }, "TRANSACTION.CREATED")
+      )
+
+      const result = await processAfriexWebhook(asContainer(container), body, {})
+
+      expect(result.outcome).toBe("captured")
+      expect(container.session.data.currentStatus).toBe("SUCCESS")
+    })
+
+    it("keeps an earlier held deposit when a second one settles on the cancelled order", async () => {
+      const container = createMockContainer({
+        collectionStatus: "canceled",
+        sessionStatus: "requires_more",
+        sessionData: {
+          currentStatus: "SETTLED_AFTER_CANCEL",
+          afriexTransactionId: "txn_1",
+          receivedAmount: "25000.00",
+          receivedCurrency: "NGN",
+        },
+      })
+      const body = JSON.stringify(buildTransactionPayload({ transactionId: "txn_2" }))
+
+      const result = await processAfriexWebhook(asContainer(container), body, {})
+
+      expect(result.outcome).toBe("settled_after_cancel")
+      expect(container.session.data.afriexTransactionId).toBe("txn_2")
+      expect(container.session.data.extraDeposits).toEqual([
+        expect.objectContaining({ transactionId: "txn_1", amount: "25000.00" }),
+      ])
+    })
+
+    it("does not let a late progress event overwrite it", async () => {
+      const container = createMockContainer({
+        sessionStatus: "requires_more",
+        sessionData: { currentStatus: "SETTLED_AFTER_CANCEL", afriexTransactionId: "txn_1" },
+      })
+      const body = JSON.stringify(
+        buildTransactionPayload({ status: "PROCESSING", updatedAt: "2026-09-16T12:00:00.000Z" })
+      )
+
+      await processAfriexWebhook(asContainer(container), body, {})
+
+      expect(container.session.data.currentStatus).toBe("SETTLED_AFTER_CANCEL")
+      expect(container.paymentModule.updatePaymentSession).not.toHaveBeenCalled()
     })
   })
 
@@ -473,6 +748,53 @@ describe("Afriex webhook handling", () => {
     })
   })
 
+  describe("a redelivery that overlaps the first attempt", () => {
+    it("asks Afriex to retry later while the first delivery is still being processed", async () => {
+      const container = createMockContainer()
+      const payload = buildTransactionPayload()
+      const eventId = `TRANSACTION.UPDATED:${payload.data.transactionId}:${payload.data.status}:${payload.data.updatedAt}`
+      container.processed.set(eventId, {
+        id: "pw_running",
+        event_id: eventId,
+        processed_at: new Date(),
+        completed_at: null,
+      })
+
+      const result = await processAfriexWebhook(asContainer(container), JSON.stringify(payload), {})
+
+      expect(result.success).toBe(false)
+      expect(result.statusCode).toBe(503)
+      expect(runWorkflow).not.toHaveBeenCalled()
+    })
+
+    it("takes over a claim whose delivery died without finishing it", async () => {
+      const container = createMockContainer()
+      const payload = buildTransactionPayload()
+      const eventId = `TRANSACTION.UPDATED:${payload.data.transactionId}:${payload.data.status}:${payload.data.updatedAt}`
+      container.processed.set(eventId, {
+        id: "pw_crashed",
+        event_id: eventId,
+        processed_at: new Date(Date.now() - 10 * 60 * 1000),
+        completed_at: null,
+      })
+
+      const result = await processAfriexWebhook(asContainer(container), JSON.stringify(payload), {})
+
+      expect(result.outcome).toBe("captured")
+      expect(container.processed.get(eventId)?.completed_at).toBeInstanceOf(Date)
+    })
+
+    it("answers a redelivery of a finished event as a duplicate", async () => {
+      const container = createMockContainer()
+      const body = JSON.stringify(buildTransactionPayload())
+
+      await processAfriexWebhook(asContainer(container), body, {})
+      const again = await processAfriexWebhook(asContainer(container), body, {})
+
+      expect(again).toEqual({ success: true, outcome: "duplicate" })
+    })
+  })
+
   it("releases its claim when reconciliation fails, so the retry is not swallowed", async () => {
     const container = createMockContainer()
     container.paymentModule.updatePaymentSession.mockRejectedValueOnce(
@@ -500,5 +822,135 @@ describe("Afriex webhook handling", () => {
       statusCode: 400,
       error: "Malformed payload",
     })
+  })
+})
+
+describe("Afriex Checkout sessions", () => {
+  function checkoutContainer(options: Parameters<typeof createMockContainer>[0] = {}) {
+    const container = createMockContainer({
+      providers: [PROVIDER_ID, CHECKOUT_PROVIDER_ID],
+      orderPlaced: true,
+      sessionStatus: "pending_authorization",
+      ...options,
+      sessionData: {
+        method: "checkout",
+        stage: "open",
+        merchantReference: SESSION_ID,
+        chargedAmount: "25000",
+        expectedAmountMinor: "2500000",
+        ...options.sessionData,
+      },
+    })
+    container.session.provider_id = CHECKOUT_PROVIDER_ID
+    return container
+  }
+
+  beforeEach(() => {
+    runWorkflow.mockClear()
+  })
+
+  it("waits through the mobile-money approval step instead of flagging it for review", async () => {
+    const container = checkoutContainer()
+    const body = JSON.stringify(
+      buildTransactionPayload({
+        status: "CUSTOMER_ACTION_REQUIRED",
+        channel: "MOBILE_MONEY",
+        meta: { reference: SESSION_ID, otpRequired: true } as any,
+      })
+    )
+
+    await processAfriexWebhook(asContainer(container), body, {})
+
+    expect(container.session.status).toBe("pending_authorization")
+    expect(container.session.data).toMatchObject({
+      currentStatus: "CUSTOMER_ACTION_REQUIRED",
+      lastChannel: "MOBILE_MONEY",
+      transactions: [
+        expect.objectContaining({ status: "CUSTOMER_ACTION_REQUIRED", channel: "MOBILE_MONEY", otpRequired: true }),
+      ],
+    })
+  })
+
+  it("still flags the same status on a bank-transfer session", async () => {
+    const container = createMockContainer({ sessionStatus: "pending_authorization" })
+    const body = JSON.stringify(buildTransactionPayload({ status: "CUSTOMER_ACTION_REQUIRED" }))
+
+    await processAfriexWebhook(asContainer(container), body, {})
+
+    expect(container.session.status).toBe("requires_more")
+  })
+
+  it("keeps Afriex's failure reason, and asks a person to look at a failed hosted bank transfer", async () => {
+    const container = checkoutContainer()
+    const body = JSON.stringify(
+      buildTransactionPayload({
+        status: "FAILED",
+        channel: "VIRTUAL_BANK_ACCOUNT",
+        meta: {
+          reference: SESSION_ID,
+          failureReason: { code: "AFX_INVALID_AMOUNT", message: "The amount sent did not match.", retryable: false },
+        } as any,
+      })
+    )
+
+    await processAfriexWebhook(asContainer(container), body, {})
+
+    expect(container.session.status).toBe("error")
+    expect(container.session.data).toMatchObject({
+      currentStatus: "FAILED",
+      failureReason: expect.objectContaining({ code: "AFX_INVALID_AMOUNT", message: "The amount sent did not match." }),
+      needsAttention: "possible_wrong_amount_transfer",
+    })
+  })
+
+  it("keeps the failed attempt on record when the shopper then pays on the same link", async () => {
+    const container = checkoutContainer()
+
+    await processAfriexWebhook(
+      asContainer(container),
+      JSON.stringify(
+        buildTransactionPayload({ transactionId: "txn_card_1", status: "FAILED", channel: "CARD" })
+      ),
+      {}
+    )
+    const paid = await processAfriexWebhook(
+      asContainer(container),
+      JSON.stringify(
+        buildTransactionPayload({ transactionId: "txn_momo_2", channel: "MOBILE_MONEY", updatedAt: "2026-09-16T10:09:00.000Z" })
+      ),
+      {}
+    )
+
+    expect(paid.outcome).toBe("captured")
+    expect(container.session.data.paidChannel).toBe("MOBILE_MONEY")
+    expect(container.session.data.transactions.map((t: any) => `${t.transactionId}:${t.status}`)).toEqual([
+      "txn_card_1:FAILED",
+      "txn_momo_2:SUCCESS",
+    ])
+  })
+
+  it("checks the deposit against the rounded amount the shopper was actually charged", async () => {
+    const container = checkoutContainer({ sessionAmount: 25000.004 as any })
+
+    const result = await processAfriexWebhook(
+      asContainer(container),
+      JSON.stringify(buildTransactionPayload({ destinationAmount: "25000.00" })),
+      {}
+    )
+
+    expect(result.outcome).toBe("captured")
+  })
+
+  it("holds a checkout deposit that does not match what was charged", async () => {
+    const container = checkoutContainer()
+
+    const result = await processAfriexWebhook(
+      asContainer(container),
+      JSON.stringify(buildTransactionPayload({ destinationAmount: "24000.00" })),
+      {}
+    )
+
+    expect(result.outcome).toBe("amount_mismatch")
+    expect(runWorkflow).not.toHaveBeenCalled()
   })
 })

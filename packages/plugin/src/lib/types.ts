@@ -1,18 +1,36 @@
-export type AfriexCollectionMethod = "dedicated" | "pool"
+/** Payment rails an Afriex hosted checkout session can offer. */
+export type AfriexCheckoutChannel = "VIRTUAL_BANK_ACCOUNT" | "MOBILE_MONEY" | "CARD"
+
+export type AfriexCheckoutOptions = {
+  /**
+   * Where Afriex sends the shopper back to, over HTTPS. `{order_id}` in the
+   * path is replaced with the order's id. Checkout refuses to start until set.
+   */
+  returnUrl?: string
+  /** Other origins a storefront may ask to be sent back to. */
+  allowedReturnOrigins?: string[]
+  /** The channels checkout may offer at most. Afriex drops those a currency cannot collect. */
+  channels?: AfriexCheckoutChannel[]
+  /** Optional: the channels checkout is known to collect in each currency. */
+  currencyChannels?: Record<string, AfriexCheckoutChannel[]>
+  /** The minor-unit exponent Afriex uses, for currencies whose exponent is not 2. */
+  minorUnitExponents?: Record<string, number>
+}
 
 export type AfriexProviderOptions = {
   apiKey: string
   environment: "staging" | "production"
   webhookPublicKey: string
-  collectionMethod?: AfriexCollectionMethod
   /** Used when the cart has no billing address to infer the country from. */
   defaultCountryCode?: string
+  /** Afriex hosted checkout. Optional: bank transfer works without it. */
+  checkout?: AfriexCheckoutOptions
 }
 
 /**
- * Account details normalized away from whichever collection method produced
- * them, so everything downstream — instructions, session data, the admin
- * widget — works off one shape.
+ * The virtual account Afriex minted for one session, normalized from the SDK's
+ * payment method so everything downstream — instructions, session data, the
+ * admin widget — works off one shape.
  */
 export type AfriexCollectionAccount = {
   paymentMethodId: string
@@ -21,7 +39,7 @@ export type AfriexCollectionAccount = {
   accountNumber: string
   accountName?: string
   institutionName?: string
-  /** What the customer must quote on the transfer, and what the webhook is matched against. */
+  /** The Medusa payment session id Afriex echoes on every deposit, which the webhook is matched against. */
   reference: string
   /** Minutes until a dynamic virtual account stops accepting deposits, when Afriex reports it. */
   expiresInMinutes?: number
@@ -31,7 +49,6 @@ export type AfriexPaymentInstructions = {
   bankName?: string
   accountNumber: string
   accountName?: string
-  reference?: string
   note: string
   expiresNote?: string
   expiresInMinutes?: number
@@ -45,32 +62,132 @@ export type AfriexPaymentInstructions = {
 export type AfriexExtraDeposit = {
   transactionId: string
   amount: string
-  currency?: string
+  currency?: string | null
   receivedAt: string
+  /** Why it is here, when an admin put it here: `refund` or `excess`. */
+  reason?: string
 }
 
 /**
- * Everything the plugin persists on the Medusa payment session. `currentStatus`
- * is the only field the webhook handler mutates after initiation; the expected
- * amount/currency are written once and treated as immutable, since they are what
- * an incoming deposit gets checked against.
+ * What every Afriex session records, whichever way it collects. This is the
+ * part the webhook handler reads and writes; the method-specific parts are
+ * written once, when the session is created.
  */
-export type AfriexSessionData = {
-  afriexPaymentMethodId: string
-  /** Afriex customer the collection account belongs to; absent for business-owned accounts. */
-  afriexCustomerId?: string
-  collectionMethod: AfriexCollectionMethod
-  accountNumber: string
-  accountName?: string
-  institutionName?: string
+export type AfriexSessionBase = {
+  /** For readers only. Which method a session belongs to is decided by its provider id. */
+  method?: "bank_transfer" | "checkout"
   reference: string
+  /** What the order expected when the session was created. Checked against every deposit. */
   expectedAmount: string
   expectedCurrency: string
   currentStatus: string
-  receivedAmount?: string
-  receivedCurrency?: string
-  afriexTransactionId?: string
+  receivedAmount?: string | null
+  receivedCurrency?: string | null
+  afriexTransactionId?: string | null
   /** Settled deposits beyond the one that paid the session. Each needs a refund. */
   extraDeposits?: AfriexExtraDeposit[]
+  /** Set when a payment made to an earlier, replaced reference was applied to this session. */
+  paidViaReference?: string | null
+  /** The admin user who resolved held money on this session, and when. */
+  resolvedBy?: string | null
+  resolvedAt?: string | null
+  /** When Afriex last reported progress on a transaction for this session. */
+  lastEventAt?: string | null
+  /** The rail the latest transaction used, and the one that paid. */
+  lastChannel?: string | null
+  paidChannel?: string | null
+  /** Why the latest transaction failed, in Afriex's own customer-safe words. */
+  failureReason?: AfriexFailureReason | null
+  /** The latest transactions on this session, newest last, so failures are not overwritten. */
+  transactions?: AfriexTransactionRecord[]
+  /** Set when a person should look at this session although nothing was captured or held. */
+  needsAttention?: string | null
+}
+
+export type AfriexFailureReason = {
+  code?: string
+  message?: string
+  retryable?: boolean
+  at: string
+}
+
+export type AfriexTransactionRecord = {
+  transactionId: string
+  status: string
+  channel?: string | null
+  amount?: string | null
+  otpRequired?: boolean
+  at: string
+}
+
+/**
+ * Everything the bank-transfer provider persists on the Medusa payment session.
+ * `currentStatus` and the received-money fields are what the webhook handler
+ * mutates after initiation; the account details and expected amount are
+ * written once, since an incoming deposit gets checked against them.
+ */
+export type AfriexBankTransferSessionData = AfriexSessionBase & {
+  /** Absent on sessions stored before the method was recorded. */
+  method?: "bank_transfer"
+  afriexPaymentMethodId: string
+  /** Afriex customer the collection account belongs to; null for business-owned accounts. */
+  afriexCustomerId?: string | null
+  /**
+   * The account was minted for this session alone, which is what lets a
+   * deposit be matched to it by account. Only such sessions are ever matched
+   * or closed by account id.
+   */
+  collectionMethod: "dedicated"
+  accountNumber: string
+  accountName?: string | null
+  institutionName?: string | null
   instructions: AfriexPaymentInstructions
 }
+
+/**
+ * What the plugin's middleware puts in the session data before the checkout
+ * provider sees it. Built on the server from the cart or order; the
+ * storefront's own keys are removed first.
+ */
+export type AfriexCheckoutRequest = {
+  stage: "select" | "pay"
+  customer?: {
+    name: string
+    email: string
+    phone: string
+    countryCode: string
+  }
+  /** The admin's channel choice, when one is stored. The provider caps it further. */
+  channels?: AfriexCheckoutChannel[] | null
+  order_id?: string | null
+  cart_id?: string | null
+  payment_collection_id?: string | null
+  /** A placeholder session the plugin creates itself to apply a held payment to. */
+  purpose?: "apply"
+}
+
+/** What the hosted-checkout provider persists on the Medusa payment session. */
+export type AfriexCheckoutSessionData = AfriexSessionBase & {
+  method: "checkout"
+  /** `selected` when the shopper chose checkout but no link exists yet; `open` once Afriex made one. */
+  stage: "selected" | "open"
+  expectedAmountMinor: string | null
+  minorUnitExponent: number | null
+  /** The major-unit amount actually sent to Afriex, after rounding. */
+  chargedAmount: string | null
+  merchantReference: string | null
+  checkoutUrl: string | null
+  redirectUrl: string | null
+  channelsRequested: AfriexCheckoutChannel[]
+  /** What Afriex said the shopper will be offered, when its response said. */
+  channelsOffered: AfriexCheckoutChannel[] | null
+  createdAt: string
+  /** From Afriex, once it tells us. */
+  expiresAt: string | null
+  /** Until then: when the link is assumed to expire. */
+  expiresAtEstimate: string | null
+  checkoutSessionId: string | null
+  orderId: string | null
+}
+
+export type AfriexSessionData = AfriexBankTransferSessionData | AfriexCheckoutSessionData

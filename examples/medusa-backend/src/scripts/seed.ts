@@ -21,12 +21,14 @@ import {
 
 /**
  * Seeds just enough store for a cart to reach the Afriex payment step: an NGN
- * region that lists the provider, one product, and a shipping option to pick.
+ * region with both Afriex payment methods turned on, one product, and a
+ * shipping option to pick.
  *
- * The id Medusa stores for the provider is `pp_<identifier>_<config id>`, and
- * both halves come from medusa-config.ts.
+ * The id Medusa stores for each provider is `pp_<identifier>_<config id>`. The
+ * identifiers come from the plugin; the config id from medusa-config.ts.
  */
-const AFRIEX_PROVIDER_ID = "pp_afriex_afriex"
+const AFRIEX_BANK_TRANSFER = "pp_afriex_afriex"
+const AFRIEX_CHECKOUT = "pp_afriex-checkout_afriex"
 const COUNTRY = "ng"
 
 export default async function seedAfriexExample({ container }: ExecArgs) {
@@ -66,7 +68,7 @@ export default async function seedAfriexExample({ container }: ExecArgs) {
           name: "Nigeria",
           currency_code: "ngn",
           countries: [COUNTRY],
-          payment_providers: [AFRIEX_PROVIDER_ID],
+          payment_providers: [AFRIEX_BANK_TRANSFER, AFRIEX_CHECKOUT],
         },
       ],
     },

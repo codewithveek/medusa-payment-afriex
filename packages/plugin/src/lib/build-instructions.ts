@@ -1,6 +1,5 @@
 import type {
   AfriexCollectionAccount,
-  AfriexCollectionMethod,
   AfriexPaymentInstructions,
 } from "./types"
 
@@ -9,28 +8,15 @@ import type {
  * design. The plugin only guarantees the shape.
  */
 export function buildPaymentInstructions(
-  account: AfriexCollectionAccount,
-  collectionMethod: AfriexCollectionMethod
+  account: AfriexCollectionAccount
 ): AfriexPaymentInstructions {
-  const base = {
-    bankName: account.institutionName,
-    accountNumber: account.accountNumber,
-    accountName: account.accountName,
-  }
-
-  if (collectionMethod === "pool") {
-    return {
-      ...base,
-      reference: account.reference,
-      note: "Include the reference exactly as shown when making your transfer.",
-    }
-  }
-
   const minutes = account.expiresInMinutes
   const hasExpiry = typeof minutes === "number" && Number.isFinite(minutes) && minutes > 0
 
   return {
-    ...base,
+    bankName: account.institutionName,
+    accountNumber: account.accountNumber,
+    accountName: account.accountName,
     note: "This account is reserved for your order only. No reference needed.",
     expiresNote: hasExpiry
       ? `This account expires in ${minutes} minutes — please complete your transfer before then.`

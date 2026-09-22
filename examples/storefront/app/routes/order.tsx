@@ -13,7 +13,6 @@ type AfriexInstructions = {
   bankName?: string
   accountNumber: string
   accountName?: string
-  reference?: string
   note: string
   expiresNote?: string
 }
@@ -101,9 +100,6 @@ export default function Order({ loaderData }: Route.ComponentProps) {
               <Pair label="Account number" value={instructions.accountNumber} copyable />
               {instructions.accountName ? (
                 <Pair label="Account name" value={instructions.accountName} />
-              ) : null}
-              {instructions.reference ? (
-                <Pair label="Reference" value={instructions.reference} copyable />
               ) : null}
             </dl>
           </div>

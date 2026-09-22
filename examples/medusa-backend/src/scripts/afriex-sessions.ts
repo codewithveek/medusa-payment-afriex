@@ -1,6 +1,13 @@
 import { ExecArgs } from "@medusajs/framework/types"
 import { Modules } from "@medusajs/framework/utils"
 
+/** Both Afriex payment methods: bank transfer and hosted checkout. */
+function afriexMethodOf(providerId: string): string | undefined {
+  if (providerId.startsWith("pp_afriex_")) return "bank transfer"
+  if (providerId.startsWith("pp_afriex-checkout_")) return "checkout"
+  return undefined
+}
+
 /**
  * Lists the most recent Afriex payment sessions, newest first, with everything
  * the webhook simulator needs: the session id (which is the reference), the
@@ -16,7 +23,7 @@ export default async function listAfriexSessions({ container }: ExecArgs) {
     { take: 50, order: { created_at: "DESC" } }
   )
   const afriex = sessions
-    .filter((session) => session.provider_id.startsWith("pp_afriex_"))
+    .filter((session) => afriexMethodOf(session.provider_id))
     .slice(0, 10)
 
   if (!afriex.length) {
@@ -36,7 +43,14 @@ export default async function listAfriexSessions({ container }: ExecArgs) {
     console.log(`    expects        ${Number(session.amount)} ${session.currency_code.toUpperCase()}`)
     console.log(`    medusa status  ${session.status}`)
     console.log(`    afriex status  ${String(data.currentStatus ?? "-")}${extra ? `  (+${extra} extra deposit${extra > 1 ? "s" : ""})` : ""}`)
-    console.log(`    method         ${String(data.collectionMethod ?? "-")}`)
+    console.log(`    method         ${afriexMethodOf(session.provider_id)}`)
+    if (afriexMethodOf(session.provider_id) === "checkout") {
+      console.log(`    stage          ${String(data.stage ?? "-")}`)
+      console.log(`    link           ${String(data.checkoutUrl ?? "-")}`)
+      console.log(`    expires        ${String(data.expiresAt ?? data.expiresAtEstimate ?? "-")}`)
+    } else {
+      console.log(`    account no.    ${String(data.accountNumber ?? "-")}`)
+    }
     console.log(`    account id     ${String(data.afriexPaymentMethodId ?? "-")}`)
     console.log("")
   }

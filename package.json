@@ -19,6 +19,7 @@
     "storefront:dev": "pnpm --filter @afriex/example-storefront run dev",
     "webhook:keygen": "node scripts/afriex-webhook.mjs keygen",
     "webhook:send": "node scripts/afriex-webhook.mjs send",
+    "checkout:e2e": "node scripts/afriex-checkout-e2e.mjs",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "pnpm run build --filter \"./packages/*\" && changeset publish"

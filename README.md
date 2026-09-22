@@ -1,8 +1,10 @@
 # medusa-payment-afriex
 
-Accept bank transfers in a [Medusa](https://medusajs.com) v2 store with
-[Afriex](https://www.afriex.com). The shopper gets a bank account number at
-checkout, and a verified Afriex webhook marks the order paid when the transfer lands.
+Get paid in a [Medusa](https://medusajs.com) v2 store with
+[Afriex](https://www.afriex.com), by **bank transfer** (a bank account number
+shown at checkout) or through **Afriex Checkout** (a hosted Afriex page for
+mobile money and bank transfer). Either way, a verified Afriex webhook marks the
+order paid when the money lands. Each method is turned on or off per region.
 
 <p><img src="./packages/plugin/medusa-afriex-plugin.png" alt="Medusa Afriex payment plugin" width="100%"></p>
 
@@ -23,7 +25,11 @@ examples/
   medusa-backend/     a Medusa store that loads the plugin straight from this workspace
   storefront/         a small React Router shop that walks one cart through checkout
 scripts/
-  afriex-webhook.mjs  signs and sends test webhooks, so you can pay orders locally for free
+  afriex-webhook.mjs        signs and sends test webhooks, so you can pay orders locally for free
+  afriex-checkout-e2e.mjs   walks an Afriex Checkout order through the store API
+docs/
+  checkout-sessions-plan.md the design and milestones for Afriex Checkout
+  knowledge-graph.md        a map of every feature: how it works, where it is, how to run and test it
 ```
 
 The examples sit outside `packages/` on purpose. They are private apps that use
@@ -60,7 +66,7 @@ pnpm plugin:build
 cd examples/medusa-backend
 cp .env.template .env     # then fill in the three AFRIEX_* values
 pnpm db:up                # Postgres in Docker. Skip if DATABASE_URL points at your own.
-pnpm db:migrate           # also creates the plugin's afriex_processed_webhook table
+pnpm db:migrate           # also creates the plugin's tables
 pnpm seed                 # prints a publishable key. Copy it.
 pnpm dev                  # http://localhost:9000, admin at /app
 ```
@@ -148,6 +154,32 @@ fresh order for each one, unless it says otherwise.
 sending, and `node scripts/afriex-webhook.mjs help` lists every option. The
 script has no dependencies, so you can copy it into any project.
 
+### Afriex Checkout
+
+Set `AFRIEX_CHECKOUT_RETURN_URL` in `examples/medusa-backend/.env` (any HTTPS
+URL works for this test) and restart the backend. The seed turns both methods
+on in its region. Then, from the repository root:
+
+```bash
+pnpm checkout:e2e --publishable-key pk_...
+```
+
+It builds a cart, chooses Afriex Checkout, places the order, and asks for the
+payment link, printing each step. With working Afriex keys it prints the link
+and a ready-made simulator command. If Afriex refuses, it prints the `code` your
+storefront would get, and the order is left waiting for another try. Once a
+link exists, pay it with the simulator, using the amount the script printed:
+
+| Try this | Command | Expect |
+| --- | --- | --- |
+| Paid by mobile money | `--session X --amount 25000 --channel MOBILE_MONEY` | `captured` |
+| Failed, then paid | `--status FAILED --failure-message "Insufficient funds" --transaction t1`, then pay | `status_recorded`, then `captured`. The widget keeps the failure. |
+| Waiting on the shopper's phone | `--status CUSTOMER_ACTION_REQUIRED --otp-required` | `status_recorded`, and the order stays pending, not flagged |
+| Paid twice | pay, then pay again with a new `--transaction` | `extra_deposit` |
+
+A second "Pay now" while the link is open is refused with
+`AFRIEX_PAYMENT_IN_PROGRESS`, and the open link is sent back.
+
 > ⚠️ **Local use only.** Anyone holding `.afriex-dev/webhook-private.pem` can mark
 > orders paid on any server configured with its public key. Never deploy that
 > public key. Put Afriex's real key back before you go near production. While
@@ -175,6 +207,7 @@ pnpm typecheck
 | `pnpm storefront:dev` | Runs the example storefront |
 | `pnpm --filter medusa-payment-afriex test` | The plugin's tests only |
 | `pnpm webhook:keygen`, `pnpm webhook:send` | The webhook simulator |
+| `pnpm checkout:e2e --publishable-key pk_...` | An Afriex Checkout order through the store API |
 
 **Restart the backend after the plugin rebuilds.** The examples depend on
 `"medusa-payment-afriex": "workspace:*"`, which pnpm links to the local package,
@@ -188,15 +221,22 @@ storefront.
 
 ```
 packages/plugin/src/
-  providers/afriex-payment/service.ts   the payment provider: accounts, customers, options
-  lib/webhook-handler.ts                the only path by which Afriex changes payment state
-  lib/idempotency-store.ts              claim-before-process, backed by a unique index
-  lib/map-status.ts                     Afriex status → Medusa session status
-  api/afriex/webhook/route.ts           POST /afriex/webhook
-  modules/afriex-webhook/               the processed-webhook table and its migration
-  jobs/                                 nightly pruning of that table
-  admin/widgets/                        the order page widget
+  providers/afriex-payment/
+    base.ts                    shared by both providers: options, status, webhook verification
+    bank-transfer-service.ts   pp_afriex_afriex: virtual accounts and customers
+    checkout-service.ts        pp_afriex-checkout_afriex: payment links
+  lib/webhook-handler.ts       the only path by which Afriex changes payment state
+  lib/payment-session-guard.ts the middleware in front of every new payment session
+  lib/reconciliation.ts        the per-order lock, status writes, capture
+  lib/held-payments.ts         settling held money (apply, resolve)
+  lib/region-methods.ts        per-region on/off switches
+  api/                         the webhook route, admin routes, middlewares
+  modules/                     processed webhooks; the reference ledger and settlements
+  subscribers/, jobs/          ledger writes; nightly pruning
+  admin/widgets/               the order and region page widgets
 ```
+
+[`docs/knowledge-graph.md`](./docs/knowledge-graph.md) maps every feature to its files and tests.
 
 ### What the tests protect
 
@@ -217,11 +257,6 @@ for real. One small live order covers the rest.
 
 ## Roadmap
 
-- **Pool accounts.** Afriex attributes pool deposits by a reference it assigns
-  itself (the customer id, when one is passed). The plugin still matches on the
-  Medusa session id, which Afriex never sees, so `collectionMethod: "pool"` is
-  experimental and does not mark orders paid. The fix is to request the pool
-  account per customer and match deposits on Afriex's reference plus the amount.
 - **Refunds** from the Medusa admin.
 - **Closing a virtual account as soon as it is paid**, so a second transfer
   bounces at the bank instead of arriving as an extra deposit.

@@ -1,7 +1,7 @@
 {
   "name": "medusa-payment-afriex",
   "version": "0.1.0",
-  "description": "Medusa v2 payment provider for Afriex collection methods — dedicated virtual accounts and pool accounts, reconciled by webhook.",
+  "description": "Medusa v2 payment provider for Afriex — bank transfer into a virtual account created for each order, reconciled by webhook.",
   "author": "Afriex",
   "license": "MIT",
   "repository": {

@@ -42,6 +42,9 @@ const OUTCOMES = {
   amount_mismatch: "The deposit settled but the amount or currency did not match the session. Nothing was captured; the session is at requires_more and the admin widget shows expected vs received.",
   extra_deposit: "The session was already paid by another transaction. This one was recorded as an extra deposit to refund — see the admin widget.",
   status_recorded: "A non-settled status. It was written onto the session (or left alone if the session had already settled). Nothing was captured.",
+  settled_after_cancel: "The deposit settled on an order that was cancelled. Nothing was captured; the admin widget says it needs a refund.",
+  collection_amount_changed: "The deposit matched the total the shopper was shown, but an admin changed the order total since. Nothing was captured; it is held for review.",
+  held: "The session this reference belonged to no longer exists, but the plugin's ledger knew the reference. The payment is held against its order — apply it or refund it from the admin API.",
   duplicate: "This exact event was already processed. Nothing happened — that is idempotency working.",
   unknown_session: "The signature verified, but no payment session matched the reference (or the account id). Nothing was changed.",
   ignored: "Not a transaction event. Acknowledged and ignored.",
@@ -66,6 +69,15 @@ Afriex webhook simulator — local testing only
                         the same transfer.                Default: random
     --account <id>      The Afriex payment method id of the virtual account
                         (session data: afriexPaymentMethodId). Sent as sourceId.
+    --channel <name>    VIRTUAL_BANK_ACCOUNT | MOBILE_MONEY | CARD
+                                                          Default: VIRTUAL_BANK_ACCOUNT
+    --failure-code <c>  With --status FAILED or REJECTED: meta.failureReason.code
+    --failure-message <m>  ...and its customer-safe message.
+    --retryable         ...and mark the failure retryable.
+    --otp-required      Set meta.otpRequired (hosted mobile money waiting on a code).
+    --fee <n>           Fee Afriex reports, in the source currency.
+    --reference <r>     Top-level merchantReference, when it should differ from --session.
+    --meta-reference <r>  meta.reference, when it should differ from --session.
     --no-reference      Omit the reference, to test matching by --account alone.
     --url <url>         Webhook endpoint.  Default: ${DEFAULT_URL}
     --repeat <n>        Send the identical event n times (idempotency check).
@@ -82,6 +94,13 @@ Recipes
                                send --session payses_X --amount 25000 --transaction txn_1
   Forged request               send --session payses_X --amount 25000 --bad-signature
   Reference lost in transit    send --no-reference --account <paymentMethodId> --amount 25000
+
+Afriex Checkout (the session is the pay-stage session, payses_...)
+  Paid by mobile money         send --session payses_X --amount 25000 --channel MOBILE_MONEY
+  Waiting on the phone prompt  send --session payses_X --amount 25000 --channel MOBILE_MONEY --status CUSTOMER_ACTION_REQUIRED --otp-required
+  Card declined, then paid     send --session payses_X --amount 25000 --channel CARD --status FAILED --failure-code AFX_CARD_DECLINED --failure-message "Your card was declined."
+                               send --session payses_X --amount 25000 --channel MOBILE_MONEY
+  Paid on a replaced link      send --session payses_OLD --amount 25000   (held against its order)
 `
 
 function fail(message) {
@@ -157,6 +176,9 @@ async function send(flags) {
   const currency = String(flags.currency ?? "NGN").toUpperCase()
   const url = String(flags.url ?? DEFAULT_URL)
   const repeat = Math.max(1, Number.parseInt(String(flags.repeat ?? "1"), 10) || 1)
+  const channel = String(flags.channel ?? "VIRTUAL_BANK_ACCOUNT").toUpperCase()
+  const merchantReference = typeof flags.reference === "string" ? flags.reference : session
+  const metaReference = typeof flags["meta-reference"] === "string" ? flags["meta-reference"] : session
 
   if (!noReference && !session) {
     fail(`--session <id> is required (or pass --no-reference with --account).`)
@@ -173,6 +195,22 @@ async function send(flags) {
   if (event !== "TRANSACTION.UPDATED" && event !== "TRANSACTION.CREATED") {
     fail(`--event must be TRANSACTION.UPDATED or TRANSACTION.CREATED.`)
   }
+  if (!["VIRTUAL_BANK_ACCOUNT", "MOBILE_MONEY", "CARD"].includes(channel)) {
+    fail(`--channel must be VIRTUAL_BANK_ACCOUNT, MOBILE_MONEY or CARD.`)
+  }
+  if (flags.fee !== undefined && !Number.isFinite(Number(flags.fee))) {
+    fail(`--fee must be a number.`)
+  }
+
+  const failed = status === "FAILED" || status === "REJECTED"
+  const failureReason =
+    failed && (typeof flags["failure-code"] === "string" || typeof flags["failure-message"] === "string")
+      ? {
+          code: typeof flags["failure-code"] === "string" ? flags["failure-code"] : "AFX_SIMULATED",
+          message: typeof flags["failure-message"] === "string" ? flags["failure-message"] : "Simulated failure.",
+          retryable: flags.retryable === true,
+        }
+      : undefined
 
   const amount = Number(flags.amount).toFixed(2)
   const now = new Date().toISOString()
@@ -187,16 +225,21 @@ async function send(flags) {
     data: {
       status,
       type: "DEPOSIT",
-      channel: "VIRTUAL_BANK_ACCOUNT",
+      channel,
       sourceAmount: amount,
       sourceCurrency: currency,
       destinationAmount: amount,
       destinationCurrency: currency,
       ...(account ? { sourceId: account } : {}),
+      ...(flags.fee !== undefined ? { fee: Number(flags.fee).toFixed(2) } : {}),
       customerId: "cus_simulated",
       transactionId,
-      ...(noReference ? {} : { merchantReference: session }),
-      meta: noReference ? {} : { reference: session },
+      ...(noReference ? {} : { merchantReference }),
+      meta: {
+        ...(noReference ? {} : { reference: metaReference }),
+        ...(failureReason ? { failureReason } : {}),
+        ...(flags["otp-required"] === true ? { otpRequired: true } : {}),
+      },
       createdAt: now,
       updatedAt: now,
     },
@@ -254,6 +297,9 @@ function explain(status, json) {
   }
   if (status === 404) {
     return "No such route. The plugin must be listed under `plugins` in medusa-config.ts (not only as a payment provider), and must be built."
+  }
+  if (status === 503) {
+    return "An earlier delivery of this same event is still being processed. Afriex would retry later; a retry after it finishes is answered as a duplicate."
   }
   if (status === 500) {
     return "The handler failed and released its claim, so a retry would be processed again. The Medusa log has the reason at error level."
