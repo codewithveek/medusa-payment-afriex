@@ -25,8 +25,8 @@ pnpm plugin:build       # Medusa loads the plugin from its built output
 cd examples/medusa-backend
 cp .env.template .env    # fill in the AFRIEX_* values
 pnpm db:up               # Postgres via docker compose (skip if you have your own)
-pnpm db:migrate          # also creates the plugin's afriex_processed_webhook table
-pnpm seed                # NGN region listing the provider, a product, a key
+pnpm db:migrate          # also creates the plugin's own tables
+pnpm seed                # NGN region listing both providers, a product, a key
 pnpm dev
 ```
 
@@ -80,9 +80,16 @@ amount, status, and virtual account id, and prints a ready-made
 ## What the seed covers
 
 Enough for one cart to reach the Afriex payment step and be placed: an NGN
-region listing `pp_afriex_afriex`, a sales channel, a stock location, one
-product with stock, a flat-rate shipping option, and a publishable key linked to
-that sales channel.
+region listing both `pp_afriex_afriex` (bank transfer) and
+`pp_afriex-checkout_afriex` (Afriex Checkout), a sales channel, a stock
+location, one product with stock, a flat-rate shipping option, and a
+publishable key linked to that sales channel.
+
+Turn either method on or off from the region page in the admin, under **Afriex
+payment methods**. Afriex Checkout also needs `AFRIEX_CHECKOUT_RETURN_URL` in
+`.env`; without it, choosing it is refused and bank transfer is unaffected.
+`pnpm checkout:e2e --publishable-key pk_…` from the repo root walks one checkout
+order all the way to its payment link.
 
 It prints that key at the end — use it, not the "Default Sales Channel" key
 Medusa creates on its own first boot. Only the seeded key is linked to the

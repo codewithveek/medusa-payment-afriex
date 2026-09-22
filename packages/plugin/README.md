@@ -384,14 +384,14 @@ the origin of `returnUrl` or one listed in `allowedReturnOrigins`.
 | ------------------------------------------ | ---- | ----------------------------------------------------------------- | ------------------------------------------------------------- |
 | `AFRIEX_CHECKOUT_EMAIL_REQUIRED`           | 400  | Choosing the method; the cart has no email                        | Ask for an email                                              |
 | `AFRIEX_CHECKOUT_PHONE_REQUIRED`           | 400  | Choosing the method; no usable phone number                       | Ask for a phone number with its country                       |
-| `AFRIEX_CHECKOUT_NOT_CONFIGURED`           | 400  | Choosing the method; `checkout.returnUrl` is not set              | Hide the method. Developer setup                              |
+| `AFRIEX_CHECKOUT_NOT_CONFIGURED`           | 400  | `checkout.returnUrl` is not set, or Afriex refused the request for your store | Hide the method. Your log says which                          |
 | `AFRIEX_RETURN_URL_NOT_ALLOWED`            | 400  | Your `return_url` is not on an allowed origin                     | Developer error                                               |
 | `AFRIEX_CHECKOUT_UNAVAILABLE_FOR_CURRENCY` | 400  | The currency or amount cannot be paid this way                    | Offer another method                                          |
 | `AFRIEX_PAYMENT_IN_PROGRESS`               | 409  | A payment link is still open, a payment is moving, or it was paid | Offer the `checkout_url` in the response; retry after `retry_after` |
 | `AFRIEX_ORDER_NOT_PAYABLE`                 | 400  | The order is cancelled or already paid                            | Show the order's state                                        |
 | `AFRIEX_METHOD_UNAVAILABLE`                | 400  | The method was turned off for the region after the order was placed | Offer the other methods                                     |
 | `AFRIEX_CHECKOUT_REFUSED`                  | 400  | Afriex refused the payment link                                   | Show `message`; offer another method                          |
-| `AFRIEX_CHECKOUT_TEMPORARILY_UNAVAILABLE`  | 500  | Afriex could not be reached, or failed                            | "Please try again". The order keeps waiting                   |
+| `AFRIEX_CHECKOUT_TEMPORARILY_UNAVAILABLE`  | 500  | Afriex could not be reached or failed, or the reference was already in use | "Please try again". The order keeps waiting                   |
 
 ✅ **You should see:** the order placed as awaiting payment, the shopper sent to
 Afriex's page, and the order turning paid shortly after they pay.
@@ -447,7 +447,7 @@ before you take real customers.
 | `returnUrl`            | Where Afriex sends the shopper back to. HTTPS. `{order_id}` in the path is replaced with the order's id. Checkout refuses to start without it. |                            |
 | `allowedReturnOrigins` | Other HTTPS origins, like `"https://shop.example.com"`, that a storefront's `return_url` may use.                                       | `[]`                       |
 | `channels`             | The most checkout may offer: `VIRTUAL_BANK_ACCOUNT`, `MOBILE_MONEY`, `CARD`. `CARD` is not sent yet: the Afriex SDK does not accept it. | All of them                |
-| `currencyChannels`     | Optional. What each currency can collect, like `{ NGN: ["VIRTUAL_BANK_ACCOUNT"] }`. A currency listed with nothing in common with `channels` is refused before the order is placed. |                            |
+| `currencyChannels`     | Optional. What each currency can collect, like `{ NGN: ["VIRTUAL_BANK_ACCOUNT"], GHS: ["MOBILE_MONEY"] }`. A currency listed with nothing in common with `channels` is refused before the order is placed. |                            |
 | `minorUnitExponents`   | Decimal places Afriex uses for a currency that does not have two, like `{ XOF: 0 }`. Such a currency is refused until you set it, because a wrong guess charges 100× too much or too little. |                            |
 
 ## Currencies
@@ -610,6 +610,8 @@ with a `code` and a plain-language `message`.
 | A method is not offered at checkout                                                       | It is not turned on for the cart's region                                                                                                                            | Turn it on in the region's **Afriex payment methods** card (Step 5).                                                            |
 | Choosing Afriex Checkout fails with `AFRIEX_CHECKOUT_NOT_CONFIGURED`                      | `checkout.returnUrl` is not set                                                                                                                                      | Set it (Steps 3 and 4) and restart.                                                                                             |
 | "Pay now" always fails with `AFRIEX_CHECKOUT_TEMPORARILY_UNAVAILABLE`                     | Afriex answered `401`: a wrong key, or a key without permission to create checkout sessions. Or Afriex is unreachable                                                | The Medusa log says which. Check the key's permissions (Step 1).                                                                |
+| "Pay now" fails with `AFRIEX_CHECKOUT_NOT_CONFIGURED` although `returnUrl` is set         | Afriex answered `403` or `404`: the endpoint is not there for your store                                                                                             | Update the plugin and `@afriex/sdk`, and check with Afriex that your account can create checkout sessions. Turn the method off meanwhile. |
+| Shoppers are only offered a bank transfer on the Afriex page                              | Afriex offers only what the currency can collect. In NGN that is the virtual account; mobile money is dropped                                                        | Nothing to fix. The order widget shows the options Afriex actually offered.                                                     |
 
 ## Limitations
 

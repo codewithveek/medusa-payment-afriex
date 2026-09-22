@@ -29,7 +29,7 @@ scripts/
   afriex-checkout-e2e.mjs   walks an Afriex Checkout order through the store API
 docs/
   checkout-sessions-plan.md the design and milestones for Afriex Checkout
-  knowledge-graph.md        a map of every feature: how it works, where it is, how to run and test it
+  knowledge-graph/          a map of the codebase: one file per feature, how to run and test it
 ```
 
 The examples sit outside `packages/` on purpose. They are private apps that use
@@ -236,7 +236,7 @@ packages/plugin/src/
   admin/widgets/               the order and region page widgets
 ```
 
-[`docs/knowledge-graph.md`](./docs/knowledge-graph.md) maps every feature to its files and tests.
+[`docs/knowledge-graph/`](./docs/knowledge-graph/) maps every feature to its files and tests.
 
 ### What the tests protect
 
