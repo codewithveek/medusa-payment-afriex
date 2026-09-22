@@ -5,7 +5,7 @@ Accept bank transfers in your Medusa store with [Afriex](https://www.afriex.com)
 <p><img src="https://raw.githubusercontent.com/codewithveek/medusa-payment-afriex/main/packages/plugin/medusa-afriex-plugin.png" alt="Medusa Afriex payment plugin" width="100%"></p>
 
 Your shopper picks Afriex at checkout and gets a bank account number to pay
-into. When the transfer lands, Afriex tells your store, and the order is marked
+into. When the transfer lands, Afriex notifies your store, and the order is marked
 paid. No card form, no redirect, nothing for you to reconcile by hand.
 
 [Afriex API docs](https://docs.afriex.com) ·
