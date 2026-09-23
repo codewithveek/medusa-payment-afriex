@@ -341,7 +341,7 @@ function explain(status, json) {
     return "No such route. The plugin must be listed under `plugins` in medusa-config.ts (not only as a payment provider), and must be built."
   }
   if (status === 503) {
-    return "An earlier delivery of this same event is still being processed. Afriex would retry later; a retry after it finishes is answered as a duplicate."
+    return "Not ready: either an earlier delivery of this same event is still being processed, or the event arrived before the thing it describes was saved (a CHECKOUT_SESSION.CREATED beating its own payment link). The claim was handed back, so Afriex's retry is processed properly."
   }
   if (status === 500) {
     return "The handler failed and released its claim, so a retry would be processed again. The Medusa log has the reason at error level."
