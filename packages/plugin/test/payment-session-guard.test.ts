@@ -12,6 +12,8 @@ type Scenario = {
   cart?: Record<string, unknown> | null
   order?: Record<string, unknown> | null
   regionProviders?: string[]
+  /** What an admin saved on Settings, store-wide. */
+  settings?: Record<string, unknown>
 }
 
 const ADDRESS = {
@@ -52,6 +54,7 @@ function setup(scenario: Scenario, options: { lockBusy?: boolean } = {}) {
     cart = activeCart(),
     order = null,
     regionProviders = [BANK, CHECKOUT],
+    settings,
   } = scenario
 
   const query = {
@@ -90,8 +93,19 @@ function setup(scenario: Scenario, options: { lockBusy?: boolean } = {}) {
     }),
   }
 
+  const afriexPayments = {
+    listSettings: vi.fn(async () => (settings ? [{ id: "afxcfg_1", ...settings }] : [])),
+  }
+
   const scope = {
-    resolve: (key: string) => (key === "query" ? query : key === "locking" ? locking : undefined),
+    resolve: (key: string) =>
+      key === "query"
+        ? query
+        : key === "locking"
+          ? locking
+          : key === "afriex_payments"
+            ? afriexPayments
+            : undefined,
   }
 
   return { query, locking, scope }
@@ -278,6 +292,7 @@ describe("building a checkout session on the server", () => {
         stage: "select",
         customer: { name: "Ada Obi", email: "ada@example.com", phone: "+2348012345678", countryCode: "NG" },
         channels: null,
+        hide_bank: false,
         order_id: null,
         cart_id: "cart_01",
         payment_collection_id: COLLECTION,
@@ -362,5 +377,36 @@ describe("the collection lock", () => {
 
     expect(next).toHaveBeenCalledWith(expect.objectContaining({ message: "database unavailable" }))
     expect(res.json).not.toHaveBeenCalled()
+  })
+})
+
+describe("what the admin decided, store-wide", () => {
+  it("passes the admin's channel choice to the provider", async () => {
+    const { req } = await run(
+      { settings: { checkout_channels: ["MOBILE_MONEY"] } },
+      { provider_id: CHECKOUT }
+    )
+
+    expect(req.body.data.afriex).toMatchObject({ channels: ["MOBILE_MONEY"] })
+  })
+
+  it("asks to hide checkout's bank option only where the store's own bank transfer is on", async () => {
+    const settings = { hide_bank_channel_where_bank_transfer: true }
+
+    const withBank = await run({ settings }, { provider_id: CHECKOUT })
+    expect(withBank.req.body.data.afriex).toMatchObject({ hide_bank: true })
+
+    const without = await run(
+      { settings, regionProviders: [CHECKOUT] },
+      { provider_id: CHECKOUT }
+    )
+    expect(without.req.body.data.afriex).toMatchObject({ hide_bank: false })
+  })
+
+  it("carries on with the defaults when the settings cannot be read", async () => {
+    const { req, next } = await run({}, { provider_id: CHECKOUT })
+
+    expect(next).toHaveBeenCalled()
+    expect(req.body.data.afriex).toMatchObject({ channels: null, hide_bank: false })
   })
 })

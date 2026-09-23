@@ -311,6 +311,7 @@ export function createMockContainer(
 export function createPaymentsStore() {
   const references = new Map<string, Record<string, any>>()
   const settlements = new Map<string, Record<string, any>>()
+  const settings = new Map<string, Record<string, any>>()
   let seq = 0
 
   const uniqueViolation = (column: string, value: string) =>
@@ -324,6 +325,31 @@ export function createPaymentsStore() {
   return {
     references,
     settlements,
+    settings,
+    listSettings: vi.fn(async (filters: Record<string, unknown> = {}) =>
+      [...settings.values()].filter((row) => matches(row, filters)).map((row) => ({ ...row }))
+    ),
+    createSettings: vi.fn(async (values: Record<string, any>) => {
+      if ([...settings.values()].some((row) => row.key === values.key)) {
+        throw uniqueViolation("key", values.key)
+      }
+      const row = {
+        id: `afxcfg_${++seq}`,
+        checkout_channels: null,
+        hide_bank_channel_where_bank_transfer: false,
+        paused_regions: null,
+        ...values,
+      }
+      settings.set(row.id, row)
+      return { ...row }
+    }),
+    updateSettings: vi.fn(async ({ id, ...values }: Record<string, any>) => {
+      const row = settings.get(id)
+      if (row) {
+        Object.assign(row, values)
+      }
+      return row ? { ...row } : undefined
+    }),
     listPaymentReferences: vi.fn(async (filters: Record<string, unknown> = {}) =>
       [...references.values()].filter((row) => matches(row, filters)).map((row) => ({ ...row }))
     ),

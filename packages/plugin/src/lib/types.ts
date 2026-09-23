@@ -150,6 +150,12 @@ export type AfriexBankTransferSessionData = AfriexSessionBase & {
  * storefront's own keys are removed first.
  */
 export type AfriexCheckoutRequest = {
+  /**
+   * The admin asked to hide checkout's bank transfer, and this region offers
+   * the plugin's own. The provider decides whether that is safe for the
+   * currency.
+   */
+  hide_bank?: boolean | null
   stage: "select" | "pay"
   customer?: {
     name: string

@@ -245,6 +245,62 @@ describe("the checkout provider", () => {
       })
     })
 
+    it("hides checkout's bank option when the admin asked and the currency has another way", async () => {
+      const service = buildService({
+        checkout: { ...OPTIONS.checkout, currencyChannels: { NGN: ["VIRTUAL_BANK_ACCOUNT", "MOBILE_MONEY"] } },
+      })
+
+      await service.initiatePayment(input({ ...PAY, hide_bank: true }))
+
+      expect(sdk.checkout.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ channels: ["MOBILE_MONEY"] })
+      )
+    })
+
+    it("keeps the bank option when nothing else is known to collect that currency", async () => {
+      const service = buildService({
+        checkout: { ...OPTIONS.checkout, currencyChannels: { NGN: ["VIRTUAL_BANK_ACCOUNT"] } },
+      })
+
+      await service.initiatePayment(input({ ...PAY, hide_bank: true }))
+
+      expect(sdk.checkout.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ channels: ["VIRTUAL_BANK_ACCOUNT"] })
+      )
+    })
+
+    it("offers the bank option after all when Afriex will not collect without it", async () => {
+      const service = buildService({
+        checkout: { ...OPTIONS.checkout, currencyChannels: { NGN: ["VIRTUAL_BANK_ACCOUNT", "MOBILE_MONEY"] } },
+      })
+      sdk.checkout.createSession.mockRejectedValueOnce(
+        new ApiError({ code: "NOT_SUPPORTED_ERROR", error: "No requested deposit channel is available for currency NGN" }, 422)
+      )
+
+      const result = await service.initiatePayment(input({ ...PAY, hide_bank: true }))
+
+      expect(sdk.checkout.createSession).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ channels: ["MOBILE_MONEY"] })
+      )
+      expect(sdk.checkout.createSession).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ channels: ["VIRTUAL_BANK_ACCOUNT", "MOBILE_MONEY"] })
+      )
+      expect((result.data as any).checkoutUrl).toBe("https://pay.afriex.com/pay/abc")
+      expect((result.data as any).channelsRequested).toEqual(["VIRTUAL_BANK_ACCOUNT", "MOBILE_MONEY"])
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/without its bank-transfer option/))
+    })
+
+    it("does not retry a 422 that had nothing to do with hiding the bank option", async () => {
+      sdk.checkout.createSession.mockRejectedValueOnce(new ApiError({ code: "NOT_SUPPORTED_ERROR" }, 422))
+
+      const error = await refusal(buildService().initiatePayment(input(PAY)))
+
+      expect(error.code).toBe("AFRIEX_CHECKOUT_UNAVAILABLE_FOR_CURRENCY")
+      expect(sdk.checkout.createSession).toHaveBeenCalledTimes(1)
+    })
+
     it("sends only the admin's channels when they chose, within the cap", async () => {
       await buildService().initiatePayment(input({ ...PAY, channels: ["MOBILE_MONEY", "CARD"] }))
 

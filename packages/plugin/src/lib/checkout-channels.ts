@@ -32,13 +32,27 @@ export function effectiveChannels(input: {
   configured?: readonly AfriexCheckoutChannel[]
   adminChoice?: readonly AfriexCheckoutChannel[] | null
   currencyChannels?: readonly AfriexCheckoutChannel[]
+  /**
+   * The admin asked to hide checkout's bank transfer where the store offers its
+   * own. Honoured only when this currency is *known* to collect another way —
+   * for NGN, for instance, Afriex offers the virtual account alone, and hiding
+   * it would leave the shopper nothing.
+   */
+  hideBankChannel?: boolean
 }): AfriexCheckoutChannel[] {
   const bound = input.configured?.length ? input.configured : CHECKOUT_CHANNELS
 
-  return bound.filter(
+  const allowed = bound.filter(
     (channel) =>
       SDK_ACCEPTED_CHECKOUT_CHANNELS.includes(channel) &&
       (!input.adminChoice || input.adminChoice.includes(channel)) &&
       (!input.currencyChannels || input.currencyChannels.includes(channel))
   )
+
+  if (!input.hideBankChannel || !input.currencyChannels) {
+    return allowed
+  }
+
+  const withoutBank = allowed.filter((channel) => channel !== "VIRTUAL_BANK_ACCOUNT")
+  return withoutBank.length ? withoutBank : allowed
 }

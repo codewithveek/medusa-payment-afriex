@@ -129,10 +129,18 @@ class AfriexCheckoutService extends AfriexProviderBase {
       )
     }
 
+    const currencyChannels = settings.currencyChannels?.[currency]
     const channels = effectiveChannels({
       configured: settings.channels,
       adminChoice: request.channels,
-      currencyChannels: settings.currencyChannels?.[currency],
+      currencyChannels,
+      hideBankChannel: request.hide_bank === true,
+    })
+    // What to fall back to if Afriex will not collect without the bank option.
+    const withBankChannel = effectiveChannels({
+      configured: settings.channels,
+      adminChoice: request.channels,
+      currencyChannels,
     })
     if (!channels.length) {
       throw checkoutRefusal(
@@ -172,19 +180,43 @@ class AfriexCheckoutService extends AfriexProviderBase {
       }).filter((entry): entry is [string, string] => typeof entry[1] === "string" && !!entry[1])
     )
 
-    let created: { checkoutUrl: string; channels?: AfriexCheckoutChannel[] }
-    try {
-      created = await this.afriex_.checkout.createSession({
+    const ask = (offered: AfriexCheckoutChannel[]) =>
+      this.afriex_.checkout.createSession({
         amount: amounts.minor,
         currency,
         merchantReference: sessionId,
         redirectUrl: redirect.url,
-        customer: request.customer,
-        channels,
+        customer: request.customer!,
+        channels: offered,
         metadata,
       })
+
+    let requested = channels
+    let created: { checkoutUrl: string; channels?: AfriexCheckoutChannel[] }
+    try {
+      created = await ask(channels)
     } catch (error) {
-      throw this.toShopperError(error, sessionId)
+      // Afriex says none of these channels can collect this currency. If the
+      // bank option was hidden on purpose, that is the likeliest reason — so
+      // the shopper gets a payment link rather than the store's preference.
+      const retryable =
+        (error as { statusCode?: number })?.statusCode === 422 &&
+        withBankChannel.length > channels.length
+
+      if (!retryable) {
+        throw this.toShopperError(error, sessionId)
+      }
+
+      this.logger_.warn(
+        `Afriex Checkout could not collect ${currency} without its bank-transfer option, so it was offered after all for ${sessionId}. Add ${currency} to checkout.currencyChannels to stop hiding it here.`
+      )
+
+      try {
+        created = await ask(withBankChannel)
+        requested = withBankChannel
+      } catch (retryError) {
+        throw this.toShopperError(retryError, sessionId)
+      }
     }
 
     const now = Date.now()
@@ -194,6 +226,8 @@ class AfriexCheckoutService extends AfriexProviderBase {
       merchantReference: sessionId,
       checkoutUrl: created.checkoutUrl,
       redirectUrl: redirect.url,
+      // What was asked for in the end, which the retry above may have widened.
+      channelsRequested: requested,
       channelsOffered: Array.isArray(created.channels)
         ? created.channels.filter(isCheckoutChannel)
         : null,
@@ -471,6 +505,7 @@ function readRequest(value: unknown): AfriexCheckoutRequest {
     channels: Array.isArray(request.channels)
       ? request.channels.filter(isCheckoutChannel)
       : null,
+    hide_bank: request.hide_bank === true,
     order_id: typeof request.order_id === "string" ? request.order_id : null,
     cart_id: typeof request.cart_id === "string" ? request.cart_id : null,
     payment_collection_id:

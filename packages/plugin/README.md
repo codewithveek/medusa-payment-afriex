@@ -370,6 +370,21 @@ Afriex sends the shopper back to your `returnUrl`. Show the order page from
 there, checking every few seconds as for bank transfer. Coming back does not
 mean the shopper paid. Only the webhook marks the order paid.
 
+**To narrow what shoppers are offered on Afriex's page**, without touching
+`medusa-config.ts`:
+
+```bash
+curl -X POST https://your-medusa-server.com/admin/afriex/settings \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"checkout_channels": ["MOBILE_MONEY"], "hide_bank_channel_where_bank_transfer": true}'
+```
+
+`hide_bank_channel_where_bank_transfer` drops Afriex's own bank transfer in
+regions where you already offer the plugin's — but only where `currencyChannels`
+shows the currency can be paid another way, so a shopper is never left with
+nothing. If Afriex then refuses the payment, the plugin asks again with the bank
+option restored and says so in your log.
+
 What the order page can read from `session.data`: `stage` (`"selected"` or
 `"open"`), `checkoutUrl`, `expiresAtEstimate`, `currentStatus`,
 `failureReason.message` after a failed attempt, and `paidChannel` once paid.
@@ -657,8 +672,8 @@ with a `code` and a plain-language `message`.
 | Payment providers | `pp_afriex_afriex` (bank transfer) and `pp_afriex-checkout_afriex` (Afriex Checkout), each turned on per region |
 | API route        | `POST /afriex/webhook`                                                      |
 | Middleware       | On `POST /store/payment-collections/:id/payment-sessions` and its admin twin: stops a payment in progress being replaced, and builds Afriex Checkout's request on the server |
-| Admin API routes | `GET` and `POST /admin/afriex/regions/:id/methods`, `POST /admin/afriex/sessions/:id/resolve`, `POST /admin/afriex/references/:reference/apply` |
-| Database tables  | `afriex_processed_webhook` (each webhook is handled once), `afriex_payment_reference` (every account handed out), `afriex_settlement` (one capture per order) |
+| Admin API routes | `GET` and `POST /admin/afriex/regions/:id/methods`, `GET` and `POST /admin/afriex/settings`, `POST /admin/afriex/sessions/:id/resolve`, `POST /admin/afriex/references/:reference/apply` |
+| Database tables  | `afriex_processed_webhook` (each webhook is handled once), `afriex_payment_reference` (every account and link handed out), `afriex_settlement` (one capture per order), `afriex_setting` (your store-wide choices) |
 | Subscriber       | Records each account and payment link the providers hand out                |
 | Scheduled job    | Nightly at 03:00, removes processed-webhook rows older than 90 days         |
 | Admin widgets    | On the order details page, and on the region details page                   |

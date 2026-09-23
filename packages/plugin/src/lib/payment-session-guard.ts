@@ -16,6 +16,7 @@ import {
   isAfriexProviderId,
 } from "./constants"
 import { isFinalRecordedStatus } from "./map-status"
+import { readAfriexSettings } from "./settings"
 import { COLLECTION_LOCK_TIMEOUT_SECONDS, type GraphQuery } from "./reconciliation"
 import type {
   AfriexCheckoutRequest,
@@ -180,6 +181,8 @@ async function prepare(req: MedusaRequest, collectionId: string): Promise<Refusa
   }
 
   const { cart, order } = await findPayer(query, collectionId)
+  const regionId = order?.region_id ?? cart?.region_id
+  const regionProviders = regionId ? await providersInRegion(query, regionId) : []
 
   if (order || cart?.completed_at) {
     if (
@@ -196,8 +199,7 @@ async function prepare(req: MedusaRequest, collectionId: string): Promise<Refusa
     // Medusa checks a provider against the region only while the cart is
     // active. After that, a method an admin turned off could still be used to
     // pay an existing order.
-    const regionId = order?.region_id ?? cart?.region_id
-    if (regionId && !(await isEnabledInRegion(query, regionId, requested!))) {
+    if (regionId && !regionProviders.includes(requested!)) {
       return {
         status: 400,
         code: CheckoutErrorCode.METHOD_UNAVAILABLE,
@@ -227,10 +229,19 @@ async function prepare(req: MedusaRequest, collectionId: string): Promise<Refusa
         }
   }
 
+  // What the admin decided for the whole store. Hiding checkout's bank option
+  // only means anything where the store offers its own bank transfer; whether
+  // it is safe for this currency is the provider's call.
+  const settings = await readAfriexSettings(req.scope)
+  const bankTransferHere = regionProviders.some(
+    (provider) => afriexMethodOf(provider) === "bank_transfer"
+  )
+
   const instructions: AfriexCheckoutRequest = {
     stage: cart && !cart.completed_at ? "select" : "pay",
     customer: built.customer,
-    channels: null,
+    channels: settings.checkoutChannels,
+    hide_bank: settings.hideBankChannelWhereBankTransfer && bankTransferHere,
     order_id: order?.id ?? null,
     cart_id: cart?.id ?? null,
     payment_collection_id: collectionId,
@@ -366,11 +377,8 @@ async function findPayer(
   return { cart, order }
 }
 
-async function isEnabledInRegion(
-  query: GraphQuery,
-  regionId: string,
-  providerId: string
-): Promise<boolean> {
+/** Every payment provider the region offers — what a method is checked against. */
+async function providersInRegion(query: GraphQuery, regionId: string): Promise<string[]> {
   const [region] = (
     await query.graph({
       entity: "region",
@@ -379,7 +387,7 @@ async function isEnabledInRegion(
     })
   ).data as { payment_providers?: { id: string }[] }[]
 
-  return !!region?.payment_providers?.some((provider) => provider.id === providerId)
+  return (region?.payment_providers ?? []).map((provider) => provider.id)
 }
 
 /** The store route reads `req.body`; the admin route reads `req.validatedBody`. */
