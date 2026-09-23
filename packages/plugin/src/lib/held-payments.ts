@@ -61,6 +61,14 @@ export async function applyLatePayment(
      */
     replaceSession?: boolean
     actorId?: string
+    /**
+     * Applied by the plugin itself rather than a person, from the webhook that
+     * reported the payment. Nobody is confirming anything, so the conditions
+     * are tighter: the session must belong to a provider the event verified
+     * under, and the order's total must still be what that session asks for.
+     * Anything short of certain stays held for a person.
+     */
+    automatic?: { verifiedProviders: string[] }
   }
 ): Promise<{ outcome: "captured" | "settled_after_cancel"; payment_session_id: string }> {
   const row = await findReference(container, input.reference)
@@ -119,9 +127,28 @@ export async function applyLatePayment(
 
     const order = await findOrder(container, collectionId)
     const target = await findApplyTarget(container, collectionId, entry.transaction_id, {
-      replaceSession: input.replaceSession === true,
+      // Replacing an order's sessions is never done without a person saying so.
+      replaceSession: !input.automatic && input.replaceSession === true,
       orderId: order?.id ?? null,
     })
+
+    if (input.automatic) {
+      if (!input.automatic.verifiedProviders.includes(target.provider_id)) {
+        throw new AfriexAdminError(
+          "AFRIEX_NOT_A_VERIFIED_SESSION",
+          409,
+          `The order's session belongs to ${target.provider_id}, which did not verify this event.`
+        )
+      }
+
+      if (!amountsEqual(target.amount, collection.amount)) {
+        throw new AfriexAdminError(
+          "AFRIEX_ORDER_TOTAL_CHANGED",
+          409,
+          `The order now asks for ${toAmountString(collection.amount)} but its session was created for ${toAmountString(target.amount)}.`
+        )
+      }
+    }
 
     if (entry.currency && entry.currency !== target.currency_code.toUpperCase()) {
       throw new AfriexAdminError(

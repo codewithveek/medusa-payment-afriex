@@ -34,6 +34,8 @@ import {
   type LatePayment,
   type PaymentReferenceRow,
 } from "./ledger"
+import { AfriexAdminError } from "./admin-error"
+import { applyLatePayment } from "./held-payments"
 import { isFinalRecordedStatus, isSettled } from "./map-status"
 import {
   captureSession,
@@ -76,6 +78,7 @@ export type WebhookResult = {
     | "collection_amount_changed"
     | "status_recorded"
     | "checkout_session_recorded"
+    | "late_payment_attributed"
 }
 
 type Outcome = NonNullable<WebhookResult["outcome"]>
@@ -174,7 +177,7 @@ export async function processAfriexWebhook(
       container,
       buildEventId(parsed),
       `reference ${ledgerRow.reference}`,
-      () => holdLatePayment(container, ledgerRow!, transaction)
+      () => holdLatePayment(container, ledgerRow!, transaction, verified)
     )
   }
 
@@ -632,34 +635,67 @@ async function recordExtraDeposit(
 async function holdLatePayment(
   container: MedusaContainer,
   row: PaymentReferenceRow,
-  transaction: TransactionWebhookData
+  transaction: TransactionWebhookData,
+  verified: Set<string>
 ): Promise<Outcome> {
-  return withCollectionLock<Outcome>(container, row.payment_collection_id!, async () => {
-    // Read again under the lock: another delivery may have just written it.
-    const current = (await findReference(container, row.reference)) ?? row
-    const late = current.late_payments ?? []
+  const logger = container.resolve<Logger>("logger")
 
-    if (late.some((payment) => payment.transaction_id === transaction.transactionId)) {
-      return "held"
+  const recorded = await withCollectionLock<boolean>(
+    container,
+    row.payment_collection_id!,
+    async () => {
+      // Read again under the lock: another delivery may have just written it.
+      const current = (await findReference(container, row.reference)) ?? row
+      const late = current.late_payments ?? []
+
+      if (late.some((payment) => payment.transaction_id === transaction.transactionId)) {
+        return false
+      }
+
+      const entry: LatePayment = {
+        transaction_id: transaction.transactionId,
+        amount: transaction.destinationAmount,
+        currency: transaction.destinationCurrency?.toUpperCase() ?? null,
+        received_at: transaction.updatedAt ?? new Date().toISOString(),
+        status: "held",
+      }
+      await writeLatePayments(container, current, [...late, entry])
+      return true
     }
+  )
 
-    const entry: LatePayment = {
-      transaction_id: transaction.transactionId,
-      amount: transaction.destinationAmount,
-      currency: transaction.destinationCurrency?.toUpperCase() ?? null,
-      received_at: transaction.updatedAt ?? new Date().toISOString(),
-      status: "held",
-    }
-    await writeLatePayments(container, current, [...late, entry])
-
-    container
-      .resolve<Logger>("logger")
-      .error(
-        `Afriex deposit ${transaction.transactionId} of ${transaction.destinationAmount} ${transaction.destinationCurrency} settled for reference ${row.reference}, whose payment session no longer exists (payment collection ${row.payment_collection_id}). It is held: apply it to the order or refund it.`
-      )
-
+  if (!recorded) {
+    // Already recorded by an earlier delivery, and either still held or long
+    // since settled. Nothing to add, and nothing to apply twice.
     return "held"
-  })
+  }
+
+  // The ledger exists so this money can still reach its order. When only one
+  // thing can be meant by it — one unpaid Afriex session, for this amount, on
+  // an order that can still be paid — the plugin applies it rather than
+  // leaving a person to do it by hand. `applyLatePayment` takes the lock
+  // itself, so this runs outside the one above.
+  try {
+    const applied = await applyLatePayment(container, {
+      reference: row.reference,
+      transactionId: transaction.transactionId,
+      automatic: { verifiedProviders: [...verified] },
+    })
+
+    logger.info(
+      `Afriex deposit ${transaction.transactionId} of ${transaction.destinationAmount} ${transaction.destinationCurrency} arrived for reference ${row.reference}, whose payment session was gone. It matched the order's current session ${applied.payment_session_id} exactly and was applied to it.`
+    )
+    return applied.outcome === "captured" ? "late_payment_attributed" : applied.outcome
+  } catch (error) {
+    if (!(error instanceof AfriexAdminError)) {
+      throw error
+    }
+
+    logger.error(
+      `Afriex deposit ${transaction.transactionId} of ${transaction.destinationAmount} ${transaction.destinationCurrency} settled for reference ${row.reference}, whose payment session no longer exists (payment collection ${row.payment_collection_id}). It could not be applied on its own — ${error.message} — so it is held: apply it to the order or refund it.`
+    )
+    return "held"
+  }
 }
 
 /** How many transactions a session keeps a record of. */

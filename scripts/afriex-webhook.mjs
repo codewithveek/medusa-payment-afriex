@@ -48,6 +48,8 @@ const OUTCOMES = {
   duplicate: "This exact event was already processed. Nothing happened — that is idempotency working.",
   unknown_session: "The signature verified, but no payment session matched the reference (or the account id). Nothing was changed.",
   ignored: "Not an event the plugin acts on, or one carrying nothing it can use. Acknowledged and ignored.",
+  late_payment_attributed:
+    "The deposit arrived for a reference whose session was gone, and the order had exactly one unpaid Afriex session for the same amount. It was applied there and captured — no one had to step in.",
   checkout_session_recorded:
     "Afriex reported the payment link. Its real expiry and Afriex's session id were written onto the payment session and the ledger. No money moved.",
 }

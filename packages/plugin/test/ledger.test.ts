@@ -677,3 +677,117 @@ describe("applying a held payment when the order has no Afriex session to take i
     expect(container.session.data).toMatchObject({ currentStatus: "SUCCESS", paidViaReference: "payses_OLD" })
   })
 })
+
+describe("attributing a late payment without asking a person", () => {
+  /** The referenced session is gone; the order carries one unpaid Afriex session for the same amount. */
+  async function lateFor(options: Parameters<typeof createMockContainer>[0] = {}) {
+    const container = createMockContainer(options)
+    await seedReference(container)
+    return container
+  }
+
+  // The deposit landed in the account the old session was given, which no
+  // current session holds — so only the ledger can say whose money it is.
+  const lateBody = (overrides: Record<string, unknown> = {}) =>
+    JSON.stringify(
+      buildTransactionPayload({
+        merchantReference: "payses_OLD",
+        meta: { reference: "payses_OLD" },
+        destinationId: "pm_old",
+        ...overrides,
+      })
+    )
+
+  beforeEach(() => {
+    runWorkflow.mockClear()
+  })
+
+  it("applies it to the order's current session and captures it", async () => {
+    const container = await lateFor()
+
+    const result = await processAfriexWebhook(asContainer(container), lateBody(), {})
+
+    expect(result).toEqual({ success: true, outcome: "late_payment_attributed" })
+    expect(container.session.data).toMatchObject({
+      currentStatus: "SUCCESS",
+      afriexTransactionId: "txn_1",
+      paidViaReference: "payses_OLD",
+    })
+    expect(runWorkflow).toHaveBeenCalledTimes(1)
+    expect([...container.paymentsModule.settlements.values()]).toHaveLength(1)
+
+    const row = await findReference(asContainer(container), "payses_OLD")
+    expect(row?.late_payments).toEqual([
+      expect.objectContaining({ status: "applied", applied_to: SESSION_ID, resolved_by: null }),
+    ])
+  })
+
+  it("captures it once, however many times Afriex delivers it", async () => {
+    const container = await lateFor()
+
+    await processAfriexWebhook(asContainer(container), lateBody(), {})
+    const again = await processAfriexWebhook(
+      asContainer(container),
+      lateBody({ status: "SUCCESS", updatedAt: "2026-09-16T11:00:00.000Z" }),
+      {}
+    )
+
+    expect(again.outcome).toBe("held")
+    expect(runWorkflow).toHaveBeenCalledTimes(1)
+    const row = await findReference(asContainer(container), "payses_OLD")
+    expect(row?.late_payments).toHaveLength(1)
+    expect(row?.late_payments?.[0]).toMatchObject({ status: "applied" })
+  })
+
+  it("holds it when the amount is not what the order now asks for", async () => {
+    const container = await lateFor()
+
+    const result = await processAfriexWebhook(
+      asContainer(container),
+      lateBody({ destinationAmount: "20000.00", sourceAmount: "20000.00" }),
+      {}
+    )
+
+    expect(result.outcome).toBe("held")
+    expect(runWorkflow).not.toHaveBeenCalled()
+    expect(container.logger.error).toHaveBeenCalledWith(expect.stringMatching(/held/))
+  })
+
+  it("holds it when the order's total has changed since its session was made", async () => {
+    const container = await lateFor({ collectionAmount: 30000 })
+
+    const result = await processAfriexWebhook(asContainer(container), lateBody(), {})
+
+    expect(result.outcome).toBe("held")
+    expect(runWorkflow).not.toHaveBeenCalled()
+  })
+
+  it("holds it when the order was cancelled", async () => {
+    const container = await lateFor({ orderStatus: "canceled", orderPlaced: true })
+
+    const result = await processAfriexWebhook(asContainer(container), lateBody(), {})
+
+    expect(result.outcome).toBe("held")
+    expect(runWorkflow).not.toHaveBeenCalled()
+  })
+
+  it("holds it when the order has already been paid another way", async () => {
+    const container = await lateFor()
+    container.session.status = "authorized"
+    container.session.payment = { id: "pay_other" }
+
+    const result = await processAfriexWebhook(asContainer(container), lateBody(), {})
+
+    expect(result.outcome).toBe("held")
+    expect(runWorkflow).not.toHaveBeenCalled()
+  })
+
+  it("holds it when nothing on the order can take it", async () => {
+    const container = await lateFor({ sessionMissing: true })
+
+    const result = await processAfriexWebhook(asContainer(container), lateBody(), {})
+
+    expect(result.outcome).toBe("held")
+    expect(runWorkflow).not.toHaveBeenCalled()
+  })
+})

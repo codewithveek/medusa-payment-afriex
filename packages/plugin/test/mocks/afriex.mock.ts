@@ -146,11 +146,13 @@ export function createMockContainer(
   const order = { id: "order_1", status: orderStatus }
 
   const paymentModule = {
-    retrievePaymentSession: vi.fn(async (_id: string) => {
-      if (sessionMissing) {
+    retrievePaymentSession: vi.fn(async (id: string) => {
+      if (sessionMissing || (id !== session.id && !siblingSessions.some((s) => s.id === id))) {
+        // Medusa throws for an id it does not hold — which is what a reference
+        // whose session was deleted looks like.
         throw new MedusaError(MedusaError.Types.NOT_FOUND, "Payment session not found")
       }
-      return session
+      return siblingSessions.find((s) => s.id === id) ?? session
     }),
     listPaymentSessions: vi.fn(async (filters: Record<string, unknown> = {}) => {
       if (sessionMissing) {

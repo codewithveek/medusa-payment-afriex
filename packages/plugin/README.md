@@ -528,8 +528,10 @@ shows what arrived so you can settle the difference by hand.
 deletes a payment session when the cart total changes or the shopper picks
 another method, and the account or link they were shown may still receive
 money. The plugin keeps a record of every account and link it hands out, so that
-money is traced back to its order and _held_ against it, logged at error level.
-Apply it to the order or refund it (see below).
+money is traced back to its order. If the order has exactly one unpaid Afriex
+payment, for exactly that amount, the plugin applies it there and captures it.
+If anything is less than certain, it is _held_ against the order and logged at
+error level: apply it or refund it (see below).
 
 **An Afriex Checkout attempt fails, or the link expires.** The order keeps
 waiting. The failure reason is kept on the session for your storefront and the
