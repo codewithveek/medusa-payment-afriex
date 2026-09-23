@@ -32,7 +32,11 @@ import { isCheckoutChannel } from "../../lib/checkout-channels"
 import { mapAfriexStatus } from "../../lib/map-status"
 import { returnUrlProblem } from "../../lib/return-url"
 import type { AfriexProviderOptions, AfriexSessionBase } from "../../lib/types"
-import { getSessionId, isTransactionEvent } from "../../lib/webhook-mapping"
+import {
+  getSessionId,
+  isCheckoutSessionEvent,
+  isTransactionEvent,
+} from "../../lib/webhook-mapping"
 
 export type InjectedDependencies = {
   logger: Logger
@@ -267,6 +271,18 @@ export abstract class AfriexProviderBase extends AbstractPaymentProvider<AfriexP
         `Afriex ${event.event} event${transactionId} arrived on Medusa's generic /hooks/payment endpoint, which this provider does not support. It was NOT processed and no order was updated. Register https://<your-server>${AFRIEX_WEBHOOK_PATH} as the webhook URL in the Afriex dashboard instead.`
       )
       return { action: PaymentActions.NOT_SUPPORTED }
+    }
+
+    // A checkout-session event is verified, but carries no payment: it is how
+    // the plugin learns a link's real expiry. `not_supported` would read as
+    // "did not verify", so it answers pending with no session id — which
+    // Medusa's own subscriber ignores — and the plugin's route takes it from
+    // there.
+    if (isCheckoutSessionEvent(event)) {
+      return {
+        action: PaymentActions.PENDING,
+        data: { session_id: "", amount: new BigNumber(0) },
+      }
     }
 
     if (!isTransactionEvent(event)) {

@@ -21,6 +21,10 @@ export const PaymentReference = model.define("afriex_payment_reference", {
   account_id: model.text().nullable(),
   /** Checkout: the amount sent to Afriex, in minor units. */
   amount_minor: model.text().nullable(),
+  /** Checkout: Afriex's own id for the hosted session, from `CHECKOUT_SESSION.CREATED`. */
+  afriex_session_id: model.text().nullable(),
+  /** Checkout: when the payment link stops accepting payment, as Afriex reported it. */
+  expires_at: model.dateTime().nullable(),
   /** When Medusa deleted or cancelled the session this reference was handed out for. */
   superseded_at: model.dateTime().nullable(),
   /**

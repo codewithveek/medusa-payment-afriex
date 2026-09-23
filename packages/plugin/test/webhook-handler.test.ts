@@ -18,6 +18,7 @@ vi.mock("@medusajs/medusa/core-flows", () => ({
 
 import { processAfriexWebhook } from "../src/lib/webhook-handler"
 import {
+  buildCheckoutSessionPayload,
   buildTransactionPayload,
   CHECKOUT_PROVIDER_ID,
   createMockContainer,
@@ -952,5 +953,154 @@ describe("Afriex Checkout sessions", () => {
 
     expect(result.outcome).toBe("amount_mismatch")
     expect(runWorkflow).not.toHaveBeenCalled()
+  })
+})
+
+describe("what Afriex reports about a payment link", () => {
+  function linkContainer(options: Parameters<typeof createMockContainer>[0] = {}) {
+    const container = createMockContainer({
+      providers: [PROVIDER_ID, CHECKOUT_PROVIDER_ID],
+      orderPlaced: true,
+      sessionStatus: "pending_authorization",
+      ...options,
+      sessionData: {
+        method: "checkout",
+        stage: "open",
+        merchantReference: SESSION_ID,
+        chargedAmount: "25000",
+        expiresAtEstimate: "2026-09-16T10:15:00.000Z",
+        ...options.sessionData,
+      },
+    })
+    container.session.provider_id = CHECKOUT_PROVIDER_ID
+    return container
+  }
+
+  /** The ledger row the pay stage writes when it hands the link out. */
+  async function withLedgerRow(container: ReturnType<typeof linkContainer>) {
+    await container.paymentsModule.createPaymentReferences({
+      reference: SESSION_ID,
+      method: "checkout",
+      payment_session_id: SESSION_ID,
+      payment_collection_id: PAYMENT_COLLECTION_ID,
+      amount: "25000",
+      currency_code: "NGN",
+    })
+  }
+
+  beforeEach(() => {
+    runWorkflow.mockClear()
+  })
+
+  it("replaces the assumed expiry with the one Afriex reported, on the session and the ledger", async () => {
+    const container = linkContainer()
+    await withLedgerRow(container)
+
+    const result = await processAfriexWebhook(
+      asContainer(container),
+      JSON.stringify(buildCheckoutSessionPayload()),
+      {}
+    )
+
+    expect(result).toMatchObject({ success: true, outcome: "checkout_session_recorded" })
+    expect(container.session.data).toMatchObject({
+      expiresAt: "2026-09-16T10:30:00.000Z",
+      checkoutSessionId: "cs_afriex_1",
+      // The link itself is untouched: this event only says when it dies.
+      stage: "open",
+      merchantReference: SESSION_ID,
+    })
+    expect([...container.paymentsModule.references.values()][0]).toMatchObject({
+      afriex_session_id: "cs_afriex_1",
+      expires_at: new Date("2026-09-16T10:30:00.000Z"),
+    })
+  })
+
+  it("never captures, even when the event says the link has been paid", async () => {
+    const container = linkContainer()
+    await withLedgerRow(container)
+
+    const result = await processAfriexWebhook(
+      asContainer(container),
+      JSON.stringify(
+        buildCheckoutSessionPayload({
+          paidAt: "2026-09-16T10:12:00.000Z",
+          afriexTransactionId: "txn_paid_1",
+        })
+      ),
+      {}
+    )
+
+    expect(result.outcome).toBe("checkout_session_recorded")
+    expect(runWorkflow).not.toHaveBeenCalled()
+    expect(container.session.status).toBe("pending_authorization")
+    expect(container.session.data).not.toMatchObject({ currentStatus: "SUCCESS" })
+  })
+
+  it("asks Afriex to deliver it again when it arrives before the link was saved", async () => {
+    // Afriex fires this in the same call that creates the session, which can
+    // beat the pay request still writing the link.
+    const container = linkContainer({ sessionData: { stage: "selected", merchantReference: null } })
+    await withLedgerRow(container)
+
+    const result = await processAfriexWebhook(
+      asContainer(container),
+      JSON.stringify(buildCheckoutSessionPayload()),
+      {}
+    )
+
+    expect(result).toMatchObject({ success: false, statusCode: 503 })
+    // The ledger still took what it could, and the claim was handed back.
+    expect([...container.paymentsModule.references.values()][0]).toMatchObject({
+      afriex_session_id: "cs_afriex_1",
+    })
+    expect(container.session.data).not.toMatchObject({ checkoutSessionId: "cs_afriex_1" })
+
+    // The retry, once the link is saved, is not treated as a duplicate.
+    container.session.data = {
+      ...container.session.data,
+      stage: "open",
+      merchantReference: SESSION_ID,
+    }
+    const retry = await processAfriexWebhook(
+      asContainer(container),
+      JSON.stringify(buildCheckoutSessionPayload()),
+      {}
+    )
+    expect(retry.outcome).toBe("checkout_session_recorded")
+  })
+
+  it("records one delivery once, and the paid re-send as its own event", async () => {
+    const container = linkContainer()
+    await withLedgerRow(container)
+    const body = JSON.stringify(buildCheckoutSessionPayload())
+
+    expect((await processAfriexWebhook(asContainer(container), body, {})).outcome).toBe(
+      "checkout_session_recorded"
+    )
+    expect((await processAfriexWebhook(asContainer(container), body, {})).outcome).toBe("duplicate")
+
+    const paid = await processAfriexWebhook(
+      asContainer(container),
+      JSON.stringify(buildCheckoutSessionPayload({ paidAt: "2026-09-16T10:12:00.000Z" })),
+      {}
+    )
+    expect(paid.outcome).toBe("checkout_session_recorded")
+  })
+
+  it("refuses one that does not verify, and ignores one with nothing to attach", async () => {
+    const unsigned = await processAfriexWebhook(
+      asContainer(linkContainer({ signatureValid: false })),
+      JSON.stringify(buildCheckoutSessionPayload()),
+      {}
+    )
+    expect(unsigned).toMatchObject({ success: false, statusCode: 401 })
+
+    const noReference = await processAfriexWebhook(
+      asContainer(linkContainer()),
+      JSON.stringify(buildCheckoutSessionPayload({ merchantReference: undefined })),
+      {}
+    )
+    expect(noReference.outcome).toBe("ignored")
   })
 })

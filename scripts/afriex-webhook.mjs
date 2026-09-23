@@ -47,7 +47,9 @@ const OUTCOMES = {
   held: "The session this reference belonged to no longer exists, but the plugin's ledger knew the reference. The payment is held against its order — apply it or refund it from the admin API.",
   duplicate: "This exact event was already processed. Nothing happened — that is idempotency working.",
   unknown_session: "The signature verified, but no payment session matched the reference (or the account id). Nothing was changed.",
-  ignored: "Not a transaction event. Acknowledged and ignored.",
+  ignored: "Not an event the plugin acts on, or one carrying nothing it can use. Acknowledged and ignored.",
+  checkout_session_recorded:
+    "Afriex reported the payment link. Its real expiry and Afriex's session id were written onto the payment session and the ledger. No money moved.",
 }
 
 const HELP = `
@@ -63,8 +65,8 @@ Afriex webhook simulator — local testing only
     --amount <n>        Amount received, in major units (25000 = NGN 25,000).
     --currency <code>   Currency received.               Default: NGN
     --status <status>   Afriex transaction status.        Default: SUCCESS
-    --event <name>      TRANSACTION.UPDATED | TRANSACTION.CREATED
-                                                          Default: TRANSACTION.UPDATED
+    --event <name>      TRANSACTION.UPDATED | TRANSACTION.CREATED |
+                        CHECKOUT_SESSION.CREATED          Default: TRANSACTION.UPDATED
     --transaction <id>  Transaction id. Reuse one to simulate later updates to
                         the same transfer.                Default: random
     --account <id>      The Afriex payment method id of the virtual account
@@ -83,6 +85,12 @@ Afriex webhook simulator — local testing only
     --repeat <n>        Send the identical event n times (idempotency check).
     --bad-signature     Tamper with the body after signing. Expect a 401.
     --dry-run           Print the payload and signature; send nothing.
+
+  With --event CHECKOUT_SESSION.CREATED (how Afriex reports a payment link):
+    --afriex-session <id>  Afriex's own session id.        Default: random uuid
+    --expires-in <min>     Minutes until the link expires. Default: 15
+    --paid-at <iso>        Simulate the re-send Afriex makes once the link is
+                           paid. Recorded, never treated as payment.
 
 Recipes
   Pay an order                 send --session payses_X --amount 25000
@@ -180,20 +188,22 @@ async function send(flags) {
   const merchantReference = typeof flags.reference === "string" ? flags.reference : session
   const metaReference = typeof flags["meta-reference"] === "string" ? flags["meta-reference"] : session
 
+  const checkoutSessionEvent = event === "CHECKOUT_SESSION.CREATED"
+
   if (!noReference && !session) {
     fail(`--session <id> is required (or pass --no-reference with --account).`)
   }
   if (noReference && !account) {
     fail(`--no-reference needs --account <paymentMethodId>, or nothing could match.`)
   }
-  if (typeof flags.amount !== "string" || !Number.isFinite(Number(flags.amount))) {
+  if (!checkoutSessionEvent && (typeof flags.amount !== "string" || !Number.isFinite(Number(flags.amount)))) {
     fail(`--amount <n> is required and must be a number, in major units.`)
   }
-  if (!STATUSES.includes(status)) {
+  if (!checkoutSessionEvent && !STATUSES.includes(status)) {
     fail(`Unknown --status "${status}". One of: ${STATUSES.join(", ")}`)
   }
-  if (event !== "TRANSACTION.UPDATED" && event !== "TRANSACTION.CREATED") {
-    fail(`--event must be TRANSACTION.UPDATED or TRANSACTION.CREATED.`)
+  if (!["TRANSACTION.UPDATED", "TRANSACTION.CREATED", "CHECKOUT_SESSION.CREATED"].includes(event)) {
+    fail(`--event must be TRANSACTION.UPDATED, TRANSACTION.CREATED or CHECKOUT_SESSION.CREATED.`)
   }
   if (!["VIRTUAL_BANK_ACCOUNT", "MOBILE_MONEY", "CARD"].includes(channel)) {
     fail(`--channel must be VIRTUAL_BANK_ACCOUNT, MOBILE_MONEY or CARD.`)
@@ -219,8 +229,36 @@ async function send(flags) {
       ? flags.transaction
       : `txn_sim_${randomBytes(6).toString("hex")}`
 
+  // The shape Afriex delivers for a hosted checkout session. It reports the
+  // link, never a payment: the money arrives as a TRANSACTION.* event.
+  const expiresInMinutes = Number(flags["expires-in"] ?? 15)
+  const afriexSessionId =
+    typeof flags["afriex-session"] === "string"
+      ? flags["afriex-session"]
+      : `${randomBytes(4).toString("hex")}-${randomBytes(2).toString("hex")}-4${randomBytes(2).toString("hex").slice(1)}-${randomBytes(2).toString("hex")}-${randomBytes(6).toString("hex")}`
+
+  const checkoutSessionPayload = {
+    event,
+    data: {
+      sessionId: afriexSessionId,
+      merchantReference,
+      amount: Math.round(Number(flags.amount ?? 0) * 100),
+      currency,
+      expiresAt: new Date(Date.now() + expiresInMinutes * 60_000).toISOString(),
+      createdAt: now,
+      metadata: {},
+      customer: {
+        name: "Simulated Shopper",
+        email: "shopper@example.com",
+        phone: "+2348012345678",
+        countryCode: "NG",
+      },
+      ...(typeof flags["paid-at"] === "string" ? { paidAt: flags["paid-at"] } : {}),
+    },
+  }
+
   // The same shape Afriex delivers (TransactionWebhookPayload in @afriex/sdk).
-  const payload = {
+  const transactionPayload = {
     event,
     data: {
       status,
@@ -244,6 +282,8 @@ async function send(flags) {
       updatedAt: now,
     },
   }
+
+  const payload = checkoutSessionEvent ? checkoutSessionPayload : transactionPayload
 
   // The signature covers the exact bytes sent, so the body is serialized once
   // and that one string is both signed and posted.

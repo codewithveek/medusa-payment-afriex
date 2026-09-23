@@ -10,6 +10,7 @@ import type {
   PaymentSessionDTO,
 } from "@medusajs/framework/types"
 import type {
+  CheckoutSessionWebhookPayload,
   TransactionWebhookData,
   TransactionWebhookPayload,
   WebhookPayload,
@@ -28,6 +29,7 @@ import { claimEvent, completeClaim, releaseClaim } from "./idempotency-store"
 import {
   claimSettlement,
   findReference,
+  recordCheckoutSessionDetails,
   writeLatePayments,
   type LatePayment,
   type PaymentReferenceRow,
@@ -47,7 +49,15 @@ import type {
   AfriexSessionBase,
   AfriexTransactionRecord,
 } from "./types"
-import { buildEventId, getSessionId, isTransactionEvent } from "./webhook-mapping"
+import { readSessionData } from "./session-data"
+import {
+  buildCheckoutSessionEventId,
+  buildEventId,
+  getSessionId,
+  isCheckoutSessionEvent,
+  isTransactionEvent,
+  readCheckoutSessionEvent,
+} from "./webhook-mapping"
 
 export type WebhookResult = {
   success: boolean
@@ -65,6 +75,7 @@ export type WebhookResult = {
     | "settled_after_cancel"
     | "collection_amount_changed"
     | "status_recorded"
+    | "checkout_session_recorded"
 }
 
 type Outcome = NonNullable<WebhookResult["outcome"]>
@@ -99,6 +110,10 @@ export async function processAfriexWebhook(
     parsed = JSON.parse(rawString) as WebhookPayload
   } catch {
     return { success: false, statusCode: 400, error: "Malformed payload" }
+  }
+
+  if (isCheckoutSessionEvent(parsed)) {
+    return processCheckoutSessionEvent(container, parsed, rawString, headers)
   }
 
   if (!isTransactionEvent(parsed)) {
@@ -155,8 +170,11 @@ export async function processAfriexWebhook(
     if (![...verified].some((id) => afriexMethodOf(id) === ledgerRow!.method)) {
       return { success: false, statusCode: 401, error: "Invalid signature" }
     }
-    return runClaimed(container, parsed, `reference ${ledgerRow.reference}`, () =>
-      holdLatePayment(container, ledgerRow!, transaction)
+    return runClaimed(
+      container,
+      buildEventId(parsed),
+      `reference ${ledgerRow.reference}`,
+      () => holdLatePayment(container, ledgerRow!, transaction)
     )
   }
 
@@ -182,10 +200,93 @@ export async function processAfriexWebhook(
   }
 
   const found = session
-  return runClaimed(container, parsed, `session ${found.id}`, () =>
+  return runClaimed(container, buildEventId(parsed), `session ${found.id}`, () =>
     reconcile(container, found, parsed)
   )
 }
+
+/**
+ * `CHECKOUT_SESSION.CREATED` is how the plugin learns when a payment link
+ * really expires; until it arrives, expiry is an assumption. It never captures
+ * and never compares amounts, whatever it carries — a payment reaches the order
+ * through `TRANSACTION.*`, where the units are known.
+ *
+ * Afriex fires it in the same call that creates the session, which can beat the
+ * pay request that is still saving the link and holding the order's lock. When
+ * that happens the ledger takes what it can and Afriex is asked to retry.
+ */
+async function processCheckoutSessionEvent(
+  container: MedusaContainer,
+  parsed: CheckoutSessionWebhookPayload,
+  rawString: string,
+  headers: Record<string, unknown>
+): Promise<WebhookResult> {
+  const logger = container.resolve<Logger>("logger")
+  const paymentModule = container.resolve<IPaymentModuleService>(Modules.PAYMENT)
+
+  const verified = await verifyWithAfriexProviders(paymentModule, parsed, rawString, headers)
+  if (!verified.size) {
+    logger.warn("Afriex checkout-session webhook failed signature verification.")
+    return { success: false, statusCode: 401, error: "Invalid signature" }
+  }
+
+  const event = readCheckoutSessionEvent(parsed.data)
+  if (!event.merchantReference || (!event.expiresAt && !event.sessionId)) {
+    // Nothing to attach, or nothing worth recording.
+    return { success: true, outcome: "ignored" }
+  }
+
+  const reference = event.merchantReference
+
+  return runClaimed(
+    container,
+    buildCheckoutSessionEventId(parsed),
+    `checkout session ${event.sessionId ?? reference}`,
+    async () => {
+      // The ledger row is keyed by the reference and does not need the session,
+      // so it is written first and survives a retry of everything after it.
+      await recordCheckoutSessionDetails(container, reference, {
+        afriexSessionId: event.sessionId,
+        expiresAt: event.expiresAt,
+      })
+
+      const session = await retrieveSession(paymentModule, reference)
+      if (!session || !verified.has(session.provider_id)) {
+        throw new RetryLater("its payment session existed")
+      }
+
+      const read = readSessionData(session.provider_id, session.data)
+      if (read?.method !== "checkout" || read.data.stage !== "open") {
+        throw new RetryLater("its payment link was saved")
+      }
+
+      return withCollectionLock<Outcome>(container, session.payment_collection_id, async () => {
+        // Re-read under the lock: the pay request may have finished writing.
+        const fresh = (await retrieveSession(paymentModule, session.id)) ?? session
+        const current = readSessionData(fresh.provider_id, fresh.data)?.data ?? read.data
+
+        await paymentModule.updatePaymentSession({
+          id: fresh.id,
+          amount: fresh.amount,
+          currency_code: fresh.currency_code,
+          data: {
+            ...current,
+            ...(event.expiresAt ? { expiresAt: event.expiresAt } : {}),
+            ...(event.sessionId ? { checkoutSessionId: event.sessionId } : {}),
+          } as unknown as Record<string, unknown>,
+        })
+
+        return "checkout_session_recorded"
+      })
+    }
+  )
+}
+
+/**
+ * Thrown by work that arrived too early to finish. The claim is handed back and
+ * Afriex is asked to retry, rather than being told the event is done.
+ */
+class RetryLater extends Error {}
 
 /**
  * Runs the work for one event exactly once. The claim is taken before the work
@@ -194,12 +295,11 @@ export async function processAfriexWebhook(
  */
 async function runClaimed(
   container: MedusaContainer,
-  event: TransactionWebhookPayload,
+  eventId: string,
   target: string,
   work: () => Promise<Outcome>
 ): Promise<WebhookResult> {
   const logger = container.resolve<Logger>("logger")
-  const eventId = buildEventId(event)
   const claim = await claimEvent(container, eventId)
 
   if (claim === "duplicate") {
@@ -221,6 +321,14 @@ async function runClaimed(
   } catch (error) {
     // An event that failed halfway must stay retryable, so the claim goes back.
     await releaseClaim(container, eventId)
+
+    if (error instanceof RetryLater) {
+      logger.info(
+        `Afriex webhook for ${target} arrived before ${error.message}. Asked Afriex to deliver it again.`
+      )
+      return { success: false, statusCode: 503, error: "Not ready for this event yet" }
+    }
+
     logger.error(
       `Afriex webhook reconciliation failed for ${target}: ${(error as Error).message}`
     )
@@ -629,7 +737,7 @@ function describeTransaction(
  */
 async function verifyWithAfriexProviders(
   paymentModule: IPaymentModuleService,
-  parsed: TransactionWebhookPayload,
+  parsed: WebhookPayload,
   rawString: string,
   headers: Record<string, unknown>
 ): Promise<Set<string>> {

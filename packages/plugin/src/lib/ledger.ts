@@ -45,6 +45,8 @@ export type PaymentReferenceRow = {
   currency_code: string
   account_id: string | null
   amount_minor: string | null
+  afriex_session_id?: string | null
+  expires_at?: Date | string | null
   superseded_at: Date | string | null
   late_payments: LatePayment[] | null
 }
@@ -119,6 +121,32 @@ export async function supersedeReference(
       id: existing.id,
       superseded_at: new Date(),
     })
+  }
+}
+
+/**
+ * What `CHECKOUT_SESSION.CREATED` told us about a link. Kept on the ledger row
+ * as well as the session, because the row outlives the session: a link paid
+ * after its session was replaced is traced through here.
+ */
+export async function recordCheckoutSessionDetails(
+  container: MedusaContainer,
+  reference: string,
+  details: { afriexSessionId?: string; expiresAt?: string }
+): Promise<void> {
+  const existing = await findReference(container, reference)
+  if (!existing) {
+    return
+  }
+
+  const expiresAt = details.expiresAt ? new Date(details.expiresAt) : undefined
+  const values = {
+    ...(details.afriexSessionId ? { afriex_session_id: details.afriexSessionId } : {}),
+    ...(expiresAt && !Number.isNaN(expiresAt.getTime()) ? { expires_at: expiresAt } : {}),
+  }
+
+  if (Object.keys(values).length) {
+    await resolveStore(container).updatePaymentReferences({ id: existing.id, ...values })
   }
 }
 

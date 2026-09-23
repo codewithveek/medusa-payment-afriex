@@ -33,6 +33,31 @@ export function buildTransactionPayload(
   }
 }
 
+/** What Afriex sends when a hosted checkout session is created, and again once it is paid. */
+export function buildCheckoutSessionPayload(
+  overrides: Record<string, unknown> = {}
+): { event: "CHECKOUT_SESSION.CREATED"; data: Record<string, unknown> } {
+  return {
+    event: "CHECKOUT_SESSION.CREATED",
+    data: {
+      sessionId: "cs_afriex_1",
+      merchantReference: SESSION_ID,
+      amount: 2500000,
+      currency: "NGN",
+      expiresAt: "2026-09-16T10:30:00.000Z",
+      createdAt: "2026-09-16T10:00:00.000Z",
+      metadata: {},
+      customer: {
+        name: "Ada Obi",
+        email: "shopper@example.com",
+        phone: "+2348012345678",
+        countryCode: "NG",
+      },
+      ...overrides,
+    },
+  }
+}
+
 export type MockContainer = ReturnType<typeof createMockContainer>
 
 type UpdateCall = {
