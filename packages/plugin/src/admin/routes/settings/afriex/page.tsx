@@ -13,7 +13,26 @@ import {
   usePrompt,
 } from "@medusajs/ui"
 import { useCallback, useEffect, useState } from "react"
-import { call, money, post } from "../../../lib/api"
+import { apiUrl, BACKEND_URL, call, money, post } from "../../../lib/api"
+import { applyLatePayment, type Prompt } from "../../../lib/settle"
+
+const plural = (count: number, one: string, many = `${one}s`) =>
+  `${count} ${count === 1 ? one : many}`
+
+/**
+ * The address to register with Afriex. The admin knows where the API lives:
+ * the configured backend URL, or — when the dashboard is served by the server
+ * itself — the page's own origin.
+ */
+function webhookAddress(path: string): string {
+  const base =
+    BACKEND_URL && BACKEND_URL !== "/"
+      ? BACKEND_URL
+      : typeof window !== "undefined"
+        ? window.location.origin
+        : ""
+  return apiUrl(base, path)
+}
 
 type Method = {
   provider_id: string
@@ -135,6 +154,11 @@ const AfriexSettingsPage = () => {
         result = await confirmEmpty()
       }
 
+      if (result.status === -1) {
+        // A person cancelled a confirmation along the way: nothing to report.
+        return
+      }
+
       if (result.status === 200) {
         if (result.body?.regions) {
           setOverview(result.body as Overview)
@@ -238,26 +262,13 @@ const AfriexSettingsPage = () => {
     )
   }
 
-  const applyLate = async (item: Extract<Attention, { kind: "late_payment" }>) => {
-    const confirmed = await prompt({
-      title: "Apply this payment to its order?",
-      description: `${money(item.amount, item.currency)} arrived for ${item.reference}. It will be recorded on the order's current Afriex payment and captured.`,
-      confirmText: "Apply it",
-      cancelText: "Cancel",
-    })
-    if (!confirmed) {
-      return
-    }
-
-    await run(
+  const applyLate = (item: Extract<Attention, { kind: "late_payment" }>) =>
+    run(
       `apply:${item.transaction_id}`,
-      () =>
-        post(`/admin/afriex/references/${item.reference}/apply`, {
-          transaction_id: item.transaction_id,
-        }),
+      async () =>
+        (await applyLatePayment(prompt as unknown as Prompt, item)) ?? { status: -1, body: null },
       "Applied to the order"
     )
-  }
 
   return (
     <div className="flex flex-col gap-y-3">
@@ -268,10 +279,11 @@ const AfriexSettingsPage = () => {
               Webhook URL
             </Text>
             <Text size="small" className="text-ui-fg-subtle">
-              Register this path on your server with Afriex: {overview.webhook_path}
+              Register this in the Afriex dashboard, under Developers → Webhooks:{" "}
+              <span className="text-ui-fg-base font-mono">{webhookAddress(overview.webhook_path)}</span>
             </Text>
           </div>
-          <Copy content={overview.webhook_path} />
+          <Copy content={webhookAddress(overview.webhook_path)} />
         </div>
         {setup.map((check) => (
           <div key={check.id} className="flex items-start gap-x-3 px-6 py-3">
@@ -336,7 +348,7 @@ const AfriexSettingsPage = () => {
                   {METHOD_LABEL[method.method]}
                 </Text>
                 <Text size="small" className="text-ui-fg-subtle">
-                  On in {method.regions_on.length} of {regions.length} regions ·{" "}
+                  On in {method.regions_on.length} of {plural(regions.length, "region")} ·{" "}
                   {method.waiting} waiting for payment
                   {method.method === "checkout" && method.waiting_without_link
                     ? `, ${method.waiting_without_link} without a payment link yet`
@@ -351,7 +363,7 @@ const AfriexSettingsPage = () => {
                   >
                     {off
                       ? remembered
-                        ? `Turn back on in ${remembered} ${remembered === 1 ? "region" : "regions"}`
+                        ? `Turn back on in ${plural(remembered, "region")}`
                         : "Off everywhere"
                       : "Turn off everywhere"}
                   </Button>
@@ -367,8 +379,12 @@ const AfriexSettingsPage = () => {
           {CHANNELS.map((channel) => (
             <label key={channel.value} className="flex items-center gap-x-3">
               <Checkbox
-                checked={channels ? channels.includes(channel.value) : true}
-                disabled={busy !== null}
+                // Card is listed so nobody wonders where it went, but it is never
+                // sent, so it is never shown as chosen either.
+                checked={
+                  channel.note ? false : channels ? channels.includes(channel.value) : true
+                }
+                disabled={busy !== null || !!channel.note}
                 onCheckedChange={(checked) => void saveChannels(channel.value, checked === true)}
               />
               <Text size="small">

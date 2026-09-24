@@ -1,7 +1,20 @@
 /** Set by Medusa's dashboard build when the admin is served apart from the server. */
 declare const __BACKEND_URL__: string | undefined
 
-/** Where the admin API lives. Empty when the dashboard is served by the Medusa server itself. */
+/**
+ * Joins the configured backend URL and an API path.
+ *
+ * Medusa's dashboard sets `__BACKEND_URL__` to `"/"` when it is served by the
+ * server itself. Joined naively that gives `//admin/...`, which a browser reads
+ * as a protocol-relative URL whose *host* is `admin` — every call fails with
+ * "Failed to fetch". So trailing slashes are dropped first.
+ */
+export function apiUrl(base: string | undefined | null, path: string): string {
+  const root = (base ?? "").replace(/\/+$/, "")
+  return `${root}${path.startsWith("/") ? path : `/${path}`}`
+}
+
+/** Where the admin API lives, as configured for the dashboard build. */
 export const BACKEND_URL: string =
   typeof __BACKEND_URL__ !== "undefined" && __BACKEND_URL__ ? __BACKEND_URL__ : ""
 
@@ -10,7 +23,7 @@ export type ApiResult<T = any> = { status: number; body: T }
 /** One call to the admin API, with the session cookie and no thrown errors. */
 export async function call<T = any>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
   try {
-    const response = await fetch(`${BACKEND_URL}${path}`, {
+    const response = await fetch(apiUrl(BACKEND_URL, path), {
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       ...init,

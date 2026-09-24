@@ -99,9 +99,14 @@ export async function getAfriexOverview(container: MedusaContainer): Promise<Afr
     })
   ).data as { id: string; name: string; currency_code: string; payment_providers?: { id: string }[] }[]
 
+  // Bank transfer first, then checkout, whatever order the module lists them in.
   const registered = (await paymentModule.listPaymentProviders({}, { select: ["id"] }))
     .map((provider) => provider.id)
     .filter((id) => afriexMethodOf(id))
+    .sort(
+      (a, b) =>
+        AFRIEX_METHODS.indexOf(afriexMethodOf(a)!) - AFRIEX_METHODS.indexOf(afriexMethodOf(b)!)
+    )
 
   const overviewRegions: OverviewRegion[] = regions.map((region) => ({
     id: region.id,
@@ -346,7 +351,7 @@ async function setupChecks(
         ? {
             id: `${method}:regions`,
             level: "ok",
-            message: `${label} is on in ${on.length} of ${regions.length} regions.`,
+            message: `${label} is on in ${on.length} of ${regions.length} ${regions.length === 1 ? "region" : "regions"}.`,
           }
         : {
             id: `${method}:regions`,

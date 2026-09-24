@@ -2,6 +2,7 @@ import { defineWidgetConfig } from "@medusajs/admin-sdk"
 import { Badge, Button, Container, Copy, Heading, Text, toast, usePrompt } from "@medusajs/ui"
 import { useCallback, useEffect, useState, type ReactNode } from "react"
 import { call, money, post } from "../lib/api"
+import { applyLatePayment, describeAccept, type Prompt } from "../lib/settle"
 import {
   AFRIEX_AMOUNT_MISMATCH,
   AFRIEX_COLLECTION_AMOUNT_CHANGED,
@@ -78,6 +79,30 @@ const STATUS_COLOR: Record<string, Color> = {
   CANCELLED: "red",
 }
 
+/** What the badge says. Afriex's raw status is still shown to anyone who hovers. */
+const STATUS_LABEL: Record<string, string> = {
+  SUCCESS: "Paid",
+  PENDING: "Waiting for payment",
+  PROCESSING: "Processing",
+  SCHEDULED: "Scheduled",
+  RETRY: "Retrying",
+  IN_REVIEW: "In review at Afriex",
+  CUSTOMER_ACTION_REQUIRED: "Waiting on the shopper",
+  UNKNOWN: "Unknown",
+  DISPUTED: "Disputed",
+  DISPUTE_EVIDENCE_SUBMITTED: "Dispute: evidence sent",
+  DISPUTE_RESOLVED: "Dispute resolved",
+  DISPUTE_WON: "Dispute won",
+  DISPUTE_LOST: "Dispute lost",
+  REFUNDED: "Refunded",
+  [AFRIEX_AMOUNT_MISMATCH]: "Amount did not match",
+  [AFRIEX_SETTLED_AFTER_CANCEL]: "Paid after cancel",
+  [AFRIEX_COLLECTION_AMOUNT_CHANGED]: "Order total changed",
+  FAILED: "Failed",
+  REJECTED: "Rejected",
+  CANCELLED: "Cancelled",
+}
+
 const CHANNEL_LABEL: Record<string, string> = {
   VIRTUAL_BANK_ACCOUNT: "Bank transfer",
   MOBILE_MONEY: "Mobile money",
@@ -114,7 +139,8 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
       <Text size="small" weight="plus">
         {label}
       </Text>
-      <Text size="small" className="break-all">
+      {/* Wraps at spaces, and breaks only a token too long to fit, like a reference. */}
+      <Text size="small" className="[overflow-wrap:anywhere]">
         {children}
       </Text>
     </>
@@ -139,34 +165,59 @@ function formatTime(value: string | null | undefined): string | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.toLocaleString()
 }
 
+/**
+ * When a person settled this payment rather than the webhook, say so — and, for
+ * a short payment accepted in full, by how much. That is the first thing anyone
+ * reconciling the books later will ask.
+ */
+function SettledByHand({ data }: { data: AfriexSessionBase }) {
+  if (!data.resolvedAt || data.currentStatus !== "SUCCESS") {
+    return null
+  }
+
+  const charged =
+    (data as { chargedAmount?: string | null }).chargedAmount ?? data.expectedAmount
+  const received = Number(data.receivedAmount)
+  const short = Number(charged) - received
+  const currency = data.receivedCurrency ?? data.expectedCurrency
+
+  return (
+    <Notice tone="subtle">
+      Settled by an admin on {formatTime(data.resolvedAt) ?? data.resolvedAt}
+      {Number.isFinite(short) && short > 0
+        ? `, accepting ${money(received, currency)} as payment in full — ${money(short, currency)} was not collected.`
+        : "."}
+    </Notice>
+  )
+}
+
 /** What the plugin holds back or asks a person to look at, whichever the method. */
 function HeldMoney({ data }: { data: AfriexSessionBase }) {
   const status = data.currentStatus
-  const received = `${data.receivedAmount} ${data.receivedCurrency ?? data.expectedCurrency}`
+  const received = money(data.receivedAmount, data.receivedCurrency ?? data.expectedCurrency)
+  const expected = money(data.expectedAmount, data.expectedCurrency)
   const extraDeposits = data.extraDeposits ?? []
 
   return (
     <>
       {status === AFRIEX_AMOUNT_MISMATCH ? (
         <Notice>
-          Amount mismatch — received {received}, expected {data.expectedAmount}{" "}
-          {data.expectedCurrency}. This order was not captured automatically and needs manual
-          review.
+          {received} arrived, but this order asks for {expected}. It was not captured — decide
+          below whether to accept it or refund it.
         </Notice>
       ) : null}
 
       {status === AFRIEX_SETTLED_AFTER_CANCEL ? (
         <Notice>
-          {received} arrived after this order was cancelled. It was not captured. Refund it from
-          your Afriex dashboard.
+          {received} arrived after this order was cancelled. It was not captured — refund it from
+          your Afriex dashboard, and mark it below once you have.
         </Notice>
       ) : null}
 
       {status === AFRIEX_COLLECTION_AMOUNT_CHANGED ? (
         <Notice>
-          {received} arrived for the order total the shopper was shown, {data.expectedAmount}{" "}
-          {data.expectedCurrency}, but the order total has changed since. It was not captured and
-          needs manual review.
+          {received} arrived for the total the shopper was shown, {expected}, but the order total
+          has changed since. It was not captured — decide below what happens to it.
         </Notice>
       ) : null}
 
@@ -188,7 +239,7 @@ function HeldMoney({ data }: { data: AfriexSessionBase }) {
             {extraDeposits.map((deposit) => (
               <li key={`${deposit.transactionId}:${deposit.reason ?? ""}`}>
                 <Text size="small">
-                  {deposit.amount} {deposit.currency ?? data.expectedCurrency} ·{" "}
+                  {money(deposit.amount, deposit.currency ?? data.expectedCurrency)} ·{" "}
                   {deposit.transactionId}
                   {deposit.reason === "excess" ? " · paid over the total" : ""}
                 </Text>
@@ -210,12 +261,10 @@ function BankTransferDetails({ data }: { data: AfriexBankTransferSessionData }) 
         {data.accountNumber}
         {data.institutionName ? ` · ${data.institutionName}` : ""}
       </Row>
-      <Row label="Expected">
-        {data.expectedAmount} {data.expectedCurrency}
-      </Row>
+      <Row label="Expected">{money(data.expectedAmount, data.expectedCurrency)}</Row>
       {data.receivedAmount ? (
         <Row label="Received">
-          {data.receivedAmount} {data.receivedCurrency ?? data.expectedCurrency}
+          {money(data.receivedAmount, data.receivedCurrency ?? data.expectedCurrency)}
         </Row>
       ) : null}
       {data.afriexTransactionId ? <Row label="Transaction">{data.afriexTransactionId}</Row> : null}
@@ -243,7 +292,7 @@ function CheckoutDetails({ data }: { data: AfriexCheckoutSessionData }) {
         <Row label="Method">Afriex Checkout (hosted page)</Row>
         <Row label="Reference">{data.merchantReference ?? data.reference}</Row>
         <Row label="Charged">
-          {data.chargedAmount ?? data.expectedAmount} {data.expectedCurrency}
+          {money(data.chargedAmount ?? data.expectedAmount, data.expectedCurrency)}
         </Row>
         {channels ? <Row label="Options offered">{channels}</Row> : null}
         {data.paidChannel ? (
@@ -251,22 +300,34 @@ function CheckoutDetails({ data }: { data: AfriexCheckoutSessionData }) {
         ) : null}
         {data.receivedAmount ? (
           <Row label="Received">
-            {data.receivedAmount} {data.receivedCurrency ?? data.expectedCurrency}
+            {money(data.receivedAmount, data.receivedCurrency ?? data.expectedCurrency)}
           </Row>
         ) : null}
         {data.afriexTransactionId ? <Row label="Transaction">{data.afriexTransactionId}</Row> : null}
         {data.checkoutSessionId ? <Row label="Afriex session">{data.checkoutSessionId}</Row> : null}
-        {data.stage === "open" && expiry ? (
-          <Row label={data.expiresAt ? "Link expires" : "Link expires (est.)"}>{expiry}</Row>
+        {/* Once money has moved, when the link would have expired no longer matters. */}
+        {data.stage === "open" && expiry && !data.afriexTransactionId ? (
+          <Row
+            label={`${expired ? "Link expired" : "Link expires"}${data.expiresAt ? "" : " (est.)"}`}
+          >
+            {expiry}
+          </Row>
         ) : null}
         {data.paidViaReference ? (
           <Row label="Paid via">earlier link {data.paidViaReference}</Row>
         ) : null}
       </div>
 
-      {data.stage === "selected" ? (
+      {data.stage === "selected" && !data.afriexTransactionId ? (
         <Notice tone="subtle">
           The shopper chose Afriex Checkout but has not opened a payment link yet.
+        </Notice>
+      ) : null}
+
+      {data.stage === "open" && expired && !data.afriexTransactionId && data.currentStatus !== "SUCCESS" ? (
+        <Notice tone="subtle">
+          The payment link has expired. The shopper can get a new one by choosing to pay again from
+          their order page.
         </Notice>
       ) : null}
 
@@ -338,7 +399,8 @@ function Settle({ orderId }: { orderId: string }) {
       if (status === 200) {
         toast.success(success)
         await load()
-      } else {
+      } else if (status !== -1) {
+        // -1 is a person cancelling a confirmation: nothing to report.
         toast.error(body?.message ?? "That did not work.")
       }
     } finally {
@@ -366,11 +428,15 @@ function Settle({ orderId }: { orderId: string }) {
   const accept = async (session: OrderPayment["sessions"][number]) => {
     const received = session.data?.receivedAmount
     const currency = session.data?.receivedCurrency ?? session.data?.expectedCurrency
+    const expected =
+      (session.data as { chargedAmount?: string | null })?.chargedAmount ??
+      session.data?.expectedAmount
     const confirmed = await prompt({
       title: "Accept this as payment in full?",
-      description: `${money(received, currency)} arrived. The order is marked paid for the amount its payment asks for, and anything beyond that is listed as money to refund.`,
-      confirmText: "Accept it",
+      description: describeAccept(received, expected, currency),
+      confirmText: "Accept as payment",
       cancelText: "Cancel",
+      variant: "confirmation",
     })
     if (!confirmed) {
       return
@@ -388,11 +454,12 @@ function Settle({ orderId }: { orderId: string }) {
 
   const refund = async (session: OrderPayment["sessions"][number]) => {
     const confirmed = await prompt({
-      title: "Record this as money to refund?",
+      title: "Mark this money for refund?",
       description:
-        "The order stays unpaid and the shopper can pay again. Make the refund itself in your Afriex dashboard.",
-      confirmText: "Record it",
+        "The order stays unpaid, and the shopper can pay again. The refund itself is made from your Afriex dashboard — this only records that it is owed.",
+      confirmText: "Mark for refund",
       cancelText: "Cancel",
+      variant: "danger",
     })
     if (!confirmed) {
       return
@@ -407,45 +474,55 @@ function Settle({ orderId }: { orderId: string }) {
   return (
     <div className="flex flex-col gap-y-4 px-6 py-4">
       {holding.map((session) => (
-        <div key={session.id} className="flex flex-wrap items-center gap-2">
-          <Text size="small" weight="plus" className="mr-auto">
+        <div key={session.id} className="flex flex-col gap-y-3">
+          <Text size="small" weight="plus">
             {session.data?.currentStatus === AFRIEX_SETTLED_AFTER_CANCEL
-              ? "This money arrived after the order was cancelled"
-              : "Decide what happens to this money"}
+              ? "Once you have refunded it"
+              : "What should happen to this money?"}
           </Text>
-          {session.data?.currentStatus === AFRIEX_SETTLED_AFTER_CANCEL ? null : (
-            <Button size="small" variant="secondary" disabled={busy} onClick={() => void accept(session)}>
-              Accept as payment
+          <div className="flex flex-wrap gap-2">
+            {session.data?.currentStatus === AFRIEX_SETTLED_AFTER_CANCEL ? null : (
+              <Button size="small" variant="secondary" disabled={busy} onClick={() => void accept(session)}>
+                Accept as payment
+              </Button>
+            )}
+            <Button size="small" variant="secondary" disabled={busy} onClick={() => void refund(session)}>
+              Mark for refund
             </Button>
-          )}
-          <Button size="small" variant="danger" disabled={busy} onClick={() => void refund(session)}>
-            Mark for refund
-          </Button>
+          </div>
         </div>
       ))}
 
       {held.map((late) => (
-        <div key={`${late.reference}:${late.transaction_id}`} className="flex flex-wrap items-center gap-2">
-          <Text size="small" weight="plus" className="mr-auto">
-            {money(late.amount, late.currency)} arrived for {late.reference}, whose payment was
-            replaced
-          </Text>
-          <Button
-            size="small"
-            variant="secondary"
-            disabled={busy}
-            onClick={() =>
-              void act(
-                () =>
-                  post(`/admin/afriex/references/${late.reference}/apply`, {
-                    transaction_id: late.transaction_id,
-                  }),
-                "Applied to this order"
-              )
-            }
-          >
-            Apply to this order
-          </Button>
+        <div key={`${late.reference}:${late.transaction_id}`} className="flex flex-col gap-y-3">
+          <div>
+            <Text size="small" weight="plus">
+              {money(late.amount, late.currency)} arrived through an earlier payment
+            </Text>
+            <Text size="small" className="text-ui-fg-subtle [overflow-wrap:anywhere]">
+              That payment ({late.reference}) was replaced before the money came, so it was held
+              for you to apply.
+            </Text>
+          </div>
+          <div>
+            <Button
+              size="small"
+              variant="secondary"
+              disabled={busy}
+              onClick={() =>
+                void act(
+                  async () =>
+                    (await applyLatePayment(prompt as unknown as Prompt, late)) ?? {
+                      status: -1,
+                      body: null,
+                    },
+                  "Applied to this order"
+                )
+              }
+            >
+              Apply to this order
+            </Button>
+          </div>
         </div>
       ))}
     </div>
@@ -470,9 +547,11 @@ const AfriexOrderWidget = ({ data }: { data: OrderLike }) => {
     <Container className="divide-y p-0">
       <div className="flex items-center justify-between px-6 py-4">
         <Heading level="h2">Afriex Payment</Heading>
-        <Badge color={color} size="2xsmall">
-          {status}
-        </Badge>
+        <span title={status}>
+          <Badge color={color} size="2xsmall">
+            {STATUS_LABEL[status] ?? status}
+          </Badge>
+        </span>
       </div>
 
       {found.method === "checkout" ? (
@@ -482,6 +561,8 @@ const AfriexOrderWidget = ({ data }: { data: OrderLike }) => {
       )}
 
       <HeldMoney data={found.data} />
+
+      <SettledByHand data={found.data} />
 
       {data.id ? <Settle orderId={data.id} /> : null}
     </Container>
