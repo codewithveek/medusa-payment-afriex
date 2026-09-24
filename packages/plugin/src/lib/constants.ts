@@ -17,6 +17,8 @@ const AFRIEX_CHECKOUT_PROVIDER_ID_PREFIX = `pp_${AFRIEX_CHECKOUT_PROVIDER_IDENTI
 /** The ways an Afriex provider collects money. */
 export type AfriexMethod = "bank_transfer" | "checkout"
 
+export const AFRIEX_METHODS: readonly AfriexMethod[] = ["bank_transfer", "checkout"]
+
 /**
  * Which Afriex method a fully-qualified provider id belongs to, or undefined
  * when it is not an Afriex provider at all. The method is always derived from

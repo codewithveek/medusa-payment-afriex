@@ -3,6 +3,7 @@ import { AFRIEX_PAYMENTS_MODULE } from "../modules/afriex-payments"
 import type AfriexPaymentsModuleService from "../modules/afriex-payments/service"
 import { AfriexAdminError } from "./admin-error"
 import { CHECKOUT_CHANNELS, isCheckoutChannel } from "./checkout-channels"
+import { AFRIEX_METHODS, type AfriexMethod } from "./constants"
 import { isUniqueViolation } from "./db-errors"
 import type { AfriexCheckoutChannel } from "./types"
 
@@ -14,8 +15,12 @@ export type AfriexSettings = {
   checkoutChannels: AfriexCheckoutChannel[] | null
   /** Hide checkout's bank option where the store's own bank transfer is on. */
   hideBankChannelWhereBankTransfer: boolean
-  /** Regions an admin paused. Recorded; the settings page acts on it. */
-  pausedRegions: string[] | null
+  /**
+   * Where a method was turned off everywhere: the regions it was on at the
+   * time, per method, so turning it back on restores exactly those and not
+   * every region in the store.
+   */
+  pausedRegions: Partial<Record<AfriexMethod, string[]>> | null
 }
 
 const DEFAULTS: AfriexSettings = {
@@ -33,6 +38,28 @@ type SettingRow = {
 
 function store(container: MedusaContainer): AfriexPaymentsModuleService {
   return container.resolve(AFRIEX_PAYMENTS_MODULE)
+}
+
+/**
+ * `{ checkout: ["reg_01"] }` — which regions a method was on when it was turned
+ * off everywhere. Returns null for anything that is not that shape, which is
+ * how the write path refuses it and the read path falls back.
+ */
+function pausedRegions(value: unknown): Partial<Record<AfriexMethod, string[]>> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null
+  }
+
+  const entries = Object.entries(value as Record<string, unknown>).filter(
+    ([method, regions]) =>
+      AFRIEX_METHODS.includes(method as AfriexMethod) &&
+      Array.isArray(regions) &&
+      regions.every((id) => typeof id === "string")
+  ) as [AfriexMethod, string[]][]
+
+  return entries.length === Object.keys(value).length
+    ? Object.fromEntries(entries.map(([method, regions]) => [method, [...new Set(regions)]]))
+    : null
 }
 
 function channelList(value: unknown): AfriexCheckoutChannel[] | null {
@@ -67,9 +94,7 @@ export async function readAfriexSettings(
   return {
     checkoutChannels: channelList(row.checkout_channels),
     hideBankChannelWhereBankTransfer: row.hide_bank_channel_where_bank_transfer === true,
-    pausedRegions: Array.isArray(row.paused_regions)
-      ? row.paused_regions.filter((id): id is string => typeof id === "string")
-      : null,
+    pausedRegions: pausedRegions(row.paused_regions),
   }
 }
 
@@ -123,13 +148,13 @@ export async function writeAfriexSettings(
     const regions = patch.paused_regions
     if (regions === null) {
       values.paused_regions = null
-    } else if (Array.isArray(regions) && regions.every((id) => typeof id === "string")) {
-      values.paused_regions = [...new Set(regions as string[])]
+    } else if (pausedRegions(regions)) {
+      values.paused_regions = pausedRegions(regions)
     } else {
       throw new AfriexAdminError(
         "AFRIEX_INVALID_REQUEST",
         400,
-        "`paused_regions` must be null, or a list of region ids."
+        "`paused_regions` must be null, or a map of method to region ids, like {\"checkout\": [\"reg_01\"]}."
       )
     }
   }

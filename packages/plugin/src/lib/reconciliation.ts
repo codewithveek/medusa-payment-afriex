@@ -27,7 +27,8 @@ export type GraphQuery = {
   graph(input: {
     entity: string
     fields: string[]
-    filters: Record<string, unknown>
+    /** Left out to read every row of an entity, as the settings page does for regions. */
+    filters?: Record<string, unknown>
   }): Promise<{ data: Record<string, unknown>[] }>
 }
 

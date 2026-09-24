@@ -22,7 +22,7 @@ const UNPAID_STATUSES = ["pending", "pending_authorization"]
 const TERMINAL_AFRIEX_STATUSES = ["FAILED", "REJECTED", "CANCELLED"]
 const WAITING_COUNT_LIMIT = 1000
 
-type SessionRow = {
+export type WaitingSession = {
   id: string
   status: string
   payment_collection_id?: string | null
@@ -44,7 +44,7 @@ export async function getRegionMethods(
   const providers = await paymentModule.listPaymentProviders({}, { select: ["id"] })
   const now = Date.now()
 
-  const candidates: { providerId: string; method: AfriexMethod; sessions: SessionRow[] }[] = []
+  const candidates: { providerId: string; method: AfriexMethod; sessions: WaitingSession[] }[] = []
   for (const provider of providers) {
     const method = afriexMethodOf(provider.id)
     if (!method) {
@@ -60,7 +60,7 @@ export async function getRegionMethods(
         take: WAITING_COUNT_LIMIT,
         order: { created_at: "DESC" },
       }
-    )) as unknown as SessionRow[]
+    )) as unknown as WaitingSession[]
 
     candidates.push({
       providerId: provider.id,
@@ -96,7 +96,11 @@ export async function getRegionMethods(
  * that was only chosen has no link, and its shopper will be asked to choose
  * again.
  */
-function mayStillReceiveMoney(method: AfriexMethod, session: SessionRow, now: number): boolean {
+export function mayStillReceiveMoney(
+  method: AfriexMethod,
+  session: WaitingSession,
+  now: number
+): boolean {
   if (!UNPAID_STATUSES.includes(session.status)) {
     return false
   }

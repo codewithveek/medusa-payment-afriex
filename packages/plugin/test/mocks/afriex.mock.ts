@@ -319,8 +319,11 @@ export function createPaymentsStore() {
       type: "invalid_data",
     })
 
+  // Medusa reads an array filter as "any of these", the way the real service does.
   const matches = (row: Record<string, any>, filters: Record<string, unknown>) =>
-    Object.entries(filters).every(([key, value]) => row[key] === value)
+    Object.entries(filters).every(([key, value]) =>
+      Array.isArray(value) ? value.includes(row[key]) : row[key] === value
+    )
 
   return {
     references,
