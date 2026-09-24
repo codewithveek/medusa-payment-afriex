@@ -328,15 +328,40 @@ A complete working version of this is in
 The payment link is created only after the order is placed, so this takes two
 calls on the same payment collection, with the order placed in between.
 
+Both calls that can be refused go through a plain `fetch`. The Medusa JS SDK
+throws a `FetchError` that keeps only `message` and `status`, so the `code`,
+`checkout_url` and `retry_after` your storefront branches on would be lost:
+
+```ts
+async function storeApi(path: string, body: unknown) {
+  const res = await fetch(`${MEDUSA_BACKEND_URL}${path}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-publishable-api-key": MEDUSA_PUBLISHABLE_KEY,
+    },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json();
+  return res.ok ? { ok: true, data: json } : { ok: false, refusal: json }; // { code, message, ... }
+}
+```
+
 **Choose the method.** The cart needs an email, and a billing or shipping
 address with a phone number. Afriex requires both, and the plugin reads them
 from the cart itself:
 
 ```ts
-await sdk.store.payment.initiatePaymentSession(cart, {
-  provider_id: "pp_afriex-checkout_afriex",
-});
+const { payment_collection } = (
+  await storeApi("/store/payment-collections", { cart_id: cart.id })
+).data;
+
+const chosen = await storeApi(
+  `/store/payment-collections/${payment_collection.id}/payment-sessions`,
+  { provider_id: "pp_afriex-checkout_afriex" }
+);
 // Nothing is sent to Afriex yet. session.data.stage === "selected"
+// A refusal here is usually AFRIEX_CHECKOUT_EMAIL_REQUIRED or _PHONE_REQUIRED.
 ```
 
 **Place the order:**
@@ -355,15 +380,19 @@ const collection = order.payment_collections?.find((c) =>
   ["not_paid", "awaiting"].includes(c.status)
 );
 
-const { payment_collection } = await sdk.client.fetch(
+const paying = await storeApi(
   `/store/payment-collections/${collection.id}/payment-sessions`,
-  { method: "POST", body: { provider_id: "pp_afriex-checkout_afriex" } }
+  { provider_id: "pp_afriex-checkout_afriex" }
 );
 
-const session = payment_collection.payment_sessions?.find(
-  (s) => s.provider_id === "pp_afriex-checkout_afriex"
-);
-window.location.href = session.data.checkoutUrl;
+if (paying.ok) {
+  const session = paying.data.payment_collection.payment_sessions?.find(
+    (s) => s.provider_id === "pp_afriex-checkout_afriex"
+  );
+  window.location.href = session.data.checkoutUrl;
+} else if (paying.refusal.code === "AFRIEX_PAYMENT_IN_PROGRESS" && paying.refusal.checkout_url) {
+  window.location.href = paying.refusal.checkout_url; // the link already open
+}
 ```
 
 Afriex sends the shopper back to your `returnUrl`. Show the order page from

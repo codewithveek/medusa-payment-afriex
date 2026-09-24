@@ -193,6 +193,10 @@ button.ghost {
   overflow: hidden;
 }
 
+.instructions + p {
+  margin: 12px 0 0;
+}
+
 .instructions dl {
   margin: 0;
 }
@@ -237,7 +241,6 @@ button.ghost {
 .note {
   background: var(--warn-soft);
   border: 1px solid var(--border);
-  border-left: 3px solid var(--warn);
   border-radius: 7px;
   padding: 11px 14px;
   font-size: 14px;
@@ -293,5 +296,87 @@ button.ghost {
   font-size: 14px;
   white-space: pre-wrap;
   color: var(--text);
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* --- Choosing how to pay ------------------------------------------------ */
+
+.section-title {
+  font-size: 17px;
+  margin: 28px 0 12px;
+}
+
+.methods {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.method {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.method:has(input:checked) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  background: var(--accent-soft);
+}
+
+/* The global input rule is for text fields; a radio keeps its own size. */
+.method input[type="radio"] {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 3px 0 0;
+  padding: 0;
+  border: 0;
+  accent-color: var(--accent);
+}
+
+.method > span {
+  display: grid;
+  gap: 2px;
+}
+
+.method .muted {
+  font-size: 14px;
+  margin: 0;
+}
+
+/* --- Paying for a placed order ------------------------------------------ */
+
+.stack {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+a.button {
+  display: block;
+  text-align: center;
+  text-decoration: none;
+  font-weight: 560;
+  border-radius: 7px;
+  padding: 12px;
+  background: var(--accent);
+  color: var(--bg);
+  margin-top: 18px;
+}
+
+button.ghost-button,
+a.button.ghost-button {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+input[aria-invalid] {
+  border-color: var(--warn);
+  box-shadow: 0 0 0 1px var(--warn);
 }

@@ -1,11 +1,26 @@
+import { useState } from "react"
 import { Form, redirect, useNavigation } from "react-router"
 import type { Route } from "./+types/checkout"
-import { AFRIEX_PROVIDER_ID, medusa } from "~/lib/medusa.server"
+import { medusa, offeredMethods, storeApi, type AfriexMethod } from "~/lib/medusa.server"
 import { readCartId, writeCartId } from "~/lib/cart.server"
+import { requestSession, startPayment } from "~/lib/pay.server"
 import { formatAmount } from "~/lib/format"
 
 export function meta() {
   return [{ title: "Checkout — Afriex Example Store" }]
+}
+
+const METHOD_COPY: Record<AfriexMethod, { title: string; detail: string; button: string }> = {
+  bank_transfer: {
+    title: "Bank transfer",
+    detail: "Get an account number made for this order, and pay from your banking app.",
+    button: "Place order and get account details",
+  },
+  checkout: {
+    title: "Pay with Afriex",
+    detail: "Mobile money or bank transfer, on a secure Afriex page. You come straight back here.",
+    button: "Place order and pay with Afriex",
+  },
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -15,11 +30,25 @@ export async function loader({ request }: Route.LoaderArgs) {
   }
 
   // Line-item totals are computed fields — without asking for `*items`
-  // they come back undefined and every line renders as zero.
+  // they come back undefined and every line renders as zero. `+` adds a field
+  // to the defaults; without it, Medusa returns only the fields named.
   const { cart } = await medusa.store.cart.retrieve(cartId, {
-    fields: "*items",
+    fields: "*items,+region_id,+shipping_total",
   })
+
+  // Delivery is added when the order is placed, so show its price now: the
+  // shopper must see the amount they will actually be asked to pay.
+  // A cart that already has delivery on it (a submission that failed partway)
+  // counts it in its own total; otherwise it is added here.
+  const { shipping_options } = await medusa.store.fulfillment.listCartOptions({ cart_id: cartId })
+  const deliveryOnCart = cart.shipping_total ?? 0
+  const delivery = deliveryOnCart > 0 ? deliveryOnCart : shipping_options[0]?.amount ?? 0
+  const totalToPay = deliveryOnCart > 0 ? cart.total ?? 0 : (cart.total ?? 0) + delivery
+
   return {
+    methods: cart.region_id ? await offeredMethods(cart.region_id) : [],
+    delivery,
+    totalToPay,
     cart: {
       currencyCode: cart.currency_code,
       items: (cart.items ?? []).map((item) => ({
@@ -40,6 +69,7 @@ export async function action({ request }: Route.ActionArgs) {
   }
 
   const form = await request.formData()
+  const method = (String(form.get("method")) === "checkout" ? "checkout" : "bank_transfer") as AfriexMethod
   const address = {
     first_name: String(form.get("firstName")),
     last_name: String(form.get("lastName")),
@@ -70,41 +100,62 @@ export async function action({ request }: Route.ActionArgs) {
     }
     await medusa.store.cart.addShippingMethod(cartId, { option_id: option.id })
 
-    // Asks the provider to mint the collection account. The session comes back
-    // `pending` — nothing has been paid yet.
-    const { cart } = await medusa.store.cart.retrieve(cartId)
-    await medusa.store.payment.initiatePaymentSession(cart, {
-      provider_id: AFRIEX_PROVIDER_ID,
-    })
+    const collection = await storeApi<{ payment_collection: { id: string } }>(
+      "/store/payment-collections",
+      { method: "POST", body: { cart_id: cartId } }
+    )
+    if (!collection.ok) {
+      throw new Error(collection.body.message ?? "The cart could not be prepared for payment.")
+    }
 
-    // The shopper has not paid, and that is the point: the provider returns
-    // `pending_authorization`, so Medusa places the order in an
-    // awaiting-payment state instead of blocking checkout on the transfer.
+    // Choosing the method. For bank transfer this mints the account now; for
+    // Afriex Checkout nothing is sent to Afriex yet — the plugin only checks the
+    // cart could be paid that way (an email, a phone number, the currency).
+    const chosen = await requestSession(collection.data.payment_collection.id, method)
+    if (chosen.kind === "needs_detail") {
+      return { error: chosen.message, field: chosen.field, method }
+    }
+    if (chosen.kind !== "placed" && chosen.kind !== "redirect") {
+      return { error: chosen.message, method }
+    }
+
+    // The shopper has not paid, and that is the point: the order is placed as
+    // awaiting payment instead of checkout waiting on the money.
     const completed = await medusa.store.cart.complete(cartId)
     if (completed.type !== "order") {
       throw new Error(completed.error?.message ?? "Could not place the order.")
     }
+    const orderId = completed.order.id
+    const clearCart = { "Set-Cookie": await writeCartId(null) }
 
-    return redirect(`/order/${completed.order.id}`, {
-      headers: { "Set-Cookie": await writeCartId(null) },
-    })
+    if (method === "bank_transfer") {
+      return redirect(`/order/${orderId}`, { headers: clearCart })
+    }
+
+    // Now the order exists, the payment link can be made — for this order, at
+    // this total. If that fails the order is still placed; its page offers
+    // to try again.
+    const paying = await startPayment(orderId, "checkout")
+    if (paying.kind === "redirect") {
+      return redirect(paying.url, { headers: clearCart })
+    }
+    const problem = "message" in paying ? `?problem=${encodeURIComponent(paying.message)}` : ""
+    return redirect(`/order/${orderId}${problem}`, { headers: clearCart })
   } catch (error) {
     return {
-      error:
-        error instanceof Error
-          ? error.message
-          : "Checkout failed for an unknown reason.",
+      method,
+      error: error instanceof Error ? error.message : "Checkout failed for an unknown reason.",
     }
   }
 }
 
-export default function Checkout({
-  loaderData,
-  actionData,
-}: Route.ComponentProps) {
-  const { cart } = loaderData
+export default function Checkout({ loaderData, actionData }: Route.ComponentProps) {
+  const { cart, methods, delivery, totalToPay } = loaderData
   const navigation = useNavigation()
   const busy = navigation.state !== "idle"
+  const [selected, setSelected] = useState<AfriexMethod | undefined>(
+    actionData?.method ?? methods[0]
+  )
 
   return (
     <>
@@ -118,22 +169,31 @@ export default function Checkout({
             <span>{formatAmount(item.total, cart.currencyCode)}</span>
           </div>
         ))}
+        <div className="line">
+          <span>Delivery</span>
+          <span>{formatAmount(delivery, cart.currencyCode)}</span>
+        </div>
         <div className="line total">
-          <span>Total</span>
-          <span>{formatAmount(cart.total, cart.currencyCode)}</span>
+          <span>Total to pay</span>
+          <span>{formatAmount(totalToPay, cart.currencyCode)}</span>
         </div>
       </section>
 
       <section className="card">
         <h1>Delivery details</h1>
-        <p className="muted">
-          Prefilled so you can get to the payment step quickly.
-        </p>
+        <p className="muted">Prefilled so you can get to the payment step quickly.</p>
 
         <Form method="post">
           <div className="field">
             <label htmlFor="email">Email</label>
-            <input id="email" name="email" type="email" defaultValue="shopper@example.com" required />
+            <input
+              id="email"
+              name="email"
+              type="email"
+              defaultValue="shopper@example.com"
+              required
+              aria-invalid={actionData?.field === "email" || undefined}
+            />
           </div>
           <div className="row">
             <div className="field">
@@ -166,25 +226,52 @@ export default function Checkout({
             </div>
             <div className="field">
               <label htmlFor="phone">Phone</label>
-              <input id="phone" name="phone" defaultValue="+2348012345678" required />
+              <input
+                id="phone"
+                name="phone"
+                defaultValue="+2348012345678"
+                required
+                aria-invalid={actionData?.field === "phone" || undefined}
+              />
             </div>
           </div>
 
-          <button className="wide" disabled={busy}>
-            {busy ? "Getting your account details…" : "Pay by bank transfer"}
+          <h2 className="section-title">How would you like to pay?</h2>
+          {methods.length ? (
+            <div className="methods" role="radiogroup" aria-label="Payment method">
+              {methods.map((method) => (
+                <label className="method" key={method}>
+                  <input
+                    type="radio"
+                    name="method"
+                    value={method}
+                    checked={method === selected}
+                    onChange={() => setSelected(method)}
+                  />
+                  <span>
+                    <strong>{METHOD_COPY[method].title}</strong>
+                    <span className="muted">{METHOD_COPY[method].detail}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          ) : (
+            <p className="error">
+              No Afriex payment method is turned on for this region. Turn one on in the admin,
+              on the region's page.
+            </p>
+          )}
+
+          {actionData?.error ? <p className="error">{actionData.error}</p> : null}
+
+          <button className="wide" disabled={busy || !methods.length}>
+            {busy
+              ? selected === "checkout"
+                ? "Placing your order…"
+                : "Getting your account details…"
+              : METHOD_COPY[selected ?? "bank_transfer"].button}
           </button>
         </Form>
-
-        {actionData?.error ? (
-          <>
-            <p className="note" style={{ marginTop: 18 }}>
-              Checkout could not reach Afriex. With placeholder credentials this
-              is expected — the provider calls the Afriex API to mint the
-              account and it rejected the key.
-            </p>
-            <pre className="error">{actionData.error}</pre>
-          </>
-        ) : null}
       </section>
     </>
   )
