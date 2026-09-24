@@ -2,6 +2,7 @@ import { defineWidgetConfig } from "@medusajs/admin-sdk"
 import type { AdminRegion, DetailWidgetProps } from "@medusajs/framework/types"
 import { Badge, Container, Heading, Switch, Text, toast, usePrompt } from "@medusajs/ui"
 import { useCallback, useEffect, useState } from "react"
+import { call } from "../lib/api"
 
 type Method = {
   provider_id: string
@@ -21,22 +22,6 @@ const COPY: Record<Method["method"], { title: string; description: string }> = {
     description:
       "The shopper pays on a secure Afriex page, by mobile money or bank transfer, then comes back to your store.",
   },
-}
-
-/** Set by Medusa's dashboard build when the admin is served apart from the server. */
-declare const __BACKEND_URL__: string | undefined
-
-/** Where the admin API lives. Empty when the dashboard is served by the Medusa server itself. */
-const BACKEND_URL: string =
-  typeof __BACKEND_URL__ !== "undefined" && __BACKEND_URL__ ? __BACKEND_URL__ : ""
-
-async function call(path: string, init?: RequestInit): Promise<{ status: number; body: any }> {
-  const response = await fetch(`${BACKEND_URL}${path}`, {
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  })
-  return { status: response.status, body: await response.json().catch(() => ({})) }
 }
 
 /**

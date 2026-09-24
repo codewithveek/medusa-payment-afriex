@@ -1,6 +1,7 @@
 import { defineWidgetConfig } from "@medusajs/admin-sdk"
-import { Badge, Container, Copy, Heading, Text } from "@medusajs/ui"
-import type { ReactNode } from "react"
+import { Badge, Button, Container, Copy, Heading, Text, toast, usePrompt } from "@medusajs/ui"
+import { useCallback, useEffect, useState, type ReactNode } from "react"
+import { call, money, post } from "../lib/api"
 import {
   AFRIEX_AMOUNT_MISMATCH,
   AFRIEX_COLLECTION_AMOUNT_CHANGED,
@@ -16,11 +17,37 @@ import type {
 type PaymentLike = { provider_id?: string; data?: Record<string, unknown> }
 
 type OrderLike = {
+  id?: string
   payment_collections?: {
     payments?: PaymentLike[]
     payment_sessions?: PaymentLike[]
   }[]
 }
+
+/** What `GET /admin/afriex/orders/:id/payment` answers, which is what the buttons act on. */
+type OrderPayment = {
+  sessions: {
+    id: string
+    method: "bank_transfer" | "checkout"
+    status: string
+    data: AfriexSessionBase
+  }[]
+  references: {
+    reference: string
+    late_payments: {
+      transaction_id: string
+      amount: string
+      currency?: string | null
+      status: "held" | "applied" | "refunded"
+    }[]
+  }[]
+}
+
+const HELD_STATUSES = [
+  AFRIEX_AMOUNT_MISMATCH,
+  AFRIEX_SETTLED_AFTER_CANCEL,
+  AFRIEX_COLLECTION_AMOUNT_CHANGED,
+]
 
 type Found =
   | { method: "bank_transfer"; data: AfriexBankTransferSessionData }
@@ -283,6 +310,148 @@ function CheckoutDetails({ data }: { data: AfriexCheckoutSessionData }) {
   )
 }
 
+/**
+ * What a person can do about money the plugin held back. Medusa's own "Mark as
+ * paid" cannot settle these orders, so this is the only way short of the API.
+ */
+function Settle({ orderId }: { orderId: string }) {
+  const [payment, setPayment] = useState<OrderPayment | null>(null)
+  const [busy, setBusy] = useState(false)
+  const prompt = usePrompt()
+
+  const load = useCallback(async () => {
+    const { status, body } = await call<OrderPayment>(`/admin/afriex/orders/${orderId}/payment`)
+    setPayment(status === 200 ? body : null)
+  }, [orderId])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const act = async (
+    action: () => Promise<{ status: number; body: any }>,
+    success: string
+  ): Promise<void> => {
+    setBusy(true)
+    try {
+      const { status, body } = await action()
+      if (status === 200) {
+        toast.success(success)
+        await load()
+      } else {
+        toast.error(body?.message ?? "That did not work.")
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!payment) {
+    return null
+  }
+
+  const holding = payment.sessions.filter((session) =>
+    HELD_STATUSES.includes(String(session.data?.currentStatus))
+  )
+  const held = payment.references.flatMap((reference) =>
+    reference.late_payments
+      .filter((late) => late.status === "held")
+      .map((late) => ({ reference: reference.reference, ...late }))
+  )
+
+  if (!holding.length && !held.length) {
+    return null
+  }
+
+  const accept = async (session: OrderPayment["sessions"][number]) => {
+    const received = session.data?.receivedAmount
+    const currency = session.data?.receivedCurrency ?? session.data?.expectedCurrency
+    const confirmed = await prompt({
+      title: "Accept this as payment in full?",
+      description: `${money(received, currency)} arrived. The order is marked paid for the amount its payment asks for, and anything beyond that is listed as money to refund.`,
+      confirmText: "Accept it",
+      cancelText: "Cancel",
+    })
+    if (!confirmed) {
+      return
+    }
+
+    await act(
+      () =>
+        post(`/admin/afriex/sessions/${session.id}/resolve`, {
+          action: "accept",
+          received_amount: received,
+        }),
+      "Accepted as payment"
+    )
+  }
+
+  const refund = async (session: OrderPayment["sessions"][number]) => {
+    const confirmed = await prompt({
+      title: "Record this as money to refund?",
+      description:
+        "The order stays unpaid and the shopper can pay again. Make the refund itself in your Afriex dashboard.",
+      confirmText: "Record it",
+      cancelText: "Cancel",
+    })
+    if (!confirmed) {
+      return
+    }
+
+    await act(
+      () => post(`/admin/afriex/sessions/${session.id}/resolve`, { action: "refund" }),
+      "Recorded as money to refund"
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-y-4 px-6 py-4">
+      {holding.map((session) => (
+        <div key={session.id} className="flex flex-wrap items-center gap-2">
+          <Text size="small" weight="plus" className="mr-auto">
+            {session.data?.currentStatus === AFRIEX_SETTLED_AFTER_CANCEL
+              ? "This money arrived after the order was cancelled"
+              : "Decide what happens to this money"}
+          </Text>
+          {session.data?.currentStatus === AFRIEX_SETTLED_AFTER_CANCEL ? null : (
+            <Button size="small" variant="secondary" disabled={busy} onClick={() => void accept(session)}>
+              Accept as payment
+            </Button>
+          )}
+          <Button size="small" variant="danger" disabled={busy} onClick={() => void refund(session)}>
+            Mark for refund
+          </Button>
+        </div>
+      ))}
+
+      {held.map((late) => (
+        <div key={`${late.reference}:${late.transaction_id}`} className="flex flex-wrap items-center gap-2">
+          <Text size="small" weight="plus" className="mr-auto">
+            {money(late.amount, late.currency)} arrived for {late.reference}, whose payment was
+            replaced
+          </Text>
+          <Button
+            size="small"
+            variant="secondary"
+            disabled={busy}
+            onClick={() =>
+              void act(
+                () =>
+                  post(`/admin/afriex/references/${late.reference}/apply`, {
+                    transaction_id: late.transaction_id,
+                  }),
+                "Applied to this order"
+              )
+            }
+          >
+            Apply to this order
+          </Button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 const AfriexOrderWidget = ({ data }: { data: OrderLike }) => {
   const found = findAfriexPayment(data)
 
@@ -313,6 +482,8 @@ const AfriexOrderWidget = ({ data }: { data: OrderLike }) => {
       )}
 
       <HeldMoney data={found.data} />
+
+      {data.id ? <Settle orderId={data.id} /> : null}
     </Container>
   )
 }
