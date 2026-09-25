@@ -2,6 +2,7 @@ import { defineWidgetConfig } from "@medusajs/admin-sdk"
 import { Badge, Button, Container, Copy, Heading, Text, toast, usePrompt } from "@medusajs/ui"
 import { useCallback, useEffect, useState, type ReactNode } from "react"
 import { call, money, post } from "../lib/api"
+import { AfriexMark } from "../lib/afriex-mark"
 import { applyLatePayment, describeAccept, type Prompt } from "../lib/settle"
 import {
   AFRIEX_AMOUNT_MISMATCH,
@@ -546,7 +547,10 @@ const AfriexOrderWidget = ({ data }: { data: OrderLike }) => {
   return (
     <Container className="divide-y p-0">
       <div className="flex items-center justify-between px-6 py-4">
-        <Heading level="h2">Afriex Payment</Heading>
+        <div className="flex items-center gap-x-2">
+          <AfriexMark />
+          <Heading level="h2">Afriex Payment</Heading>
+        </div>
         <span title={status}>
           <Badge color={color} size="2xsmall">
             {STATUS_LABEL[status] ?? status}

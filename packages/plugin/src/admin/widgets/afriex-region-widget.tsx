@@ -3,6 +3,7 @@ import type { AdminRegion, DetailWidgetProps } from "@medusajs/framework/types"
 import { Badge, Container, Heading, Switch, Text, toast, usePrompt } from "@medusajs/ui"
 import { useCallback, useEffect, useState } from "react"
 import { call } from "../lib/api"
+import { AfriexMark } from "../lib/afriex-mark"
 
 type Method = {
   provider_id: string
@@ -116,7 +117,10 @@ const AfriexRegionWidget = ({ data: region }: DetailWidgetProps<AdminRegion>) =>
   return (
     <Container className="divide-y p-0">
       <div className="px-6 py-4">
-        <Heading level="h2">Afriex payment methods</Heading>
+        <div className="flex items-center gap-x-2">
+          <AfriexMark />
+          <Heading level="h2">Afriex payment methods</Heading>
+        </div>
         <Text size="small" className="text-ui-fg-subtle mt-1">
           Choose how shoppers in {region.name} can pay with Afriex.
         </Text>

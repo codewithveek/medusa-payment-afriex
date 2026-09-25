@@ -14,6 +14,7 @@ import {
 } from "@medusajs/ui"
 import { useCallback, useEffect, useState } from "react"
 import { apiUrl, BACKEND_URL, call, money, post } from "../../../lib/api"
+import { AfriexMark } from "../../../lib/afriex-mark"
 import { applyLatePayment, type Prompt } from "../../../lib/settle"
 
 const plural = (count: number, one: string, many = `${one}s`) =>
@@ -99,6 +100,21 @@ const HELD_LABEL: Record<string, string> = {
   COLLECTION_AMOUNT_CHANGED: "Order total changed after the shopper was asked to pay",
 }
 
+/** The page's title card, as Medusa's own settings pages open with one. */
+function PageHeader() {
+  return (
+    <Container className="px-6 py-4">
+      <div className="flex items-center gap-x-2">
+        <AfriexMark size={22} />
+        <Heading level="h1">Afriex</Heading>
+      </div>
+      <Text size="small" className="text-ui-fg-subtle mt-1">
+        Take payments by bank transfer and on Afriex's hosted payment page.
+      </Text>
+    </Container>
+  )
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <Container className="divide-y p-0">
@@ -176,25 +192,31 @@ const AfriexSettingsPage = () => {
 
   if (error) {
     return (
-      <Section title="Afriex">
+      <div className="flex flex-col gap-y-3">
+      <PageHeader />
+      <Section title="Something went wrong">
         <div className="px-6 py-4">
           <Text size="small" className="text-ui-fg-error">
             {error}
           </Text>
         </div>
       </Section>
+      </div>
     )
   }
 
   if (!overview) {
     return (
-      <Section title="Afriex">
+      <div className="flex flex-col gap-y-3">
+      <PageHeader />
+      <Section title="Setup">
         <div className="px-6 py-4">
           <Text size="small" className="text-ui-fg-subtle">
             Loading…
           </Text>
         </div>
       </Section>
+      </div>
     )
   }
 
@@ -272,6 +294,7 @@ const AfriexSettingsPage = () => {
 
   return (
     <div className="flex flex-col gap-y-3">
+      <PageHeader />
       <Section title="Setup">
         <div className="flex items-center justify-between gap-x-4 px-6 py-4">
           <div>
