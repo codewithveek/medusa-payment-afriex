@@ -1,27 +1,71 @@
+/*
+ * Afriex's palette, as published in its brand guide and used on afriex.com.
+ *
+ *   Afriex Blue   #0075FF  primary
+ *   Afriex Deep   #0F142D  secondary — text, dark surfaces
+ *   Afriex Soft   #EBE2B7  secondary — warm accent
+ *   Afriex Green  #16DB93  tertiary — success
+ *   Afriex Yellow #FFC400  tertiary
+ *   Afriex Orange #F18F01  tertiary — waiting, attention
+ *
+ * Blue scale: #DBECFF #80BBFF #4A9EFF #1F7FEF #0050C9 #013A93 #00245B.
+ *
+ * The typeface is PolySans. It is a licensed font, so it is not bundled here:
+ * a store that holds a licence gets it by serving the font; everyone else gets
+ * Inter, which afriex.com itself uses alongside it.
+ */
 :root {
-  --bg: #fbfbfa;
+  --afriex-blue: #0075ff;
+  --afriex-deep: #0f142d;
+  --afriex-soft: #ebe2b7;
+  --afriex-green: #16db93;
+  --afriex-orange: #f18f01;
+
+  --bg: #f4f6fc;
   --surface: #ffffff;
-  --border: #e6e4e0;
-  --text: #1c1b19;
-  --muted: #6b6862;
-  --accent: #1f6f4a;
-  --accent-soft: #e8f3ed;
-  --warn: #8a5a12;
-  --warn-soft: #fdf3e0;
-  --radius: 10px;
+  --border: #dfe1e6;
+  --text: var(--afriex-deep);
+  --muted: #5e6c84;
+  --accent: var(--afriex-blue);
+  /* White text on #0075FF is just under 4.5:1; buttons that carry text use
+     the next step of the scale so their labels stay readable. */
+  --accent-fill: #0065ff;
+  --accent-fill-hover: #0050c9;
+  --accent-soft: #dbecff;
+  --accent-strong: #0050c9;
+  --success: #0c7d53;
+  --success-soft: #dcfcf0;
+  --attention: var(--afriex-orange);
+  --attention-soft: #fff0d9;
+  --on-accent: #ffffff;
+  --amount-bg: var(--afriex-deep);
+  --radius: 16px;
+  --radius-control: 8px;
+
+  --font: "PolySans", "PolySans Neutral", Inter, ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+  --font-display: "PolySans Bulky", "PolySans", Inter, ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #171614;
-    --surface: #201e1c;
-    --border: #35322e;
-    --text: #f2efea;
-    --muted: #a09b93;
-    --accent: #6fce9f;
-    --accent-soft: #1d3329;
-    --warn: #e8b361;
-    --warn-soft: #33281505;
+    --bg: var(--afriex-deep);
+    --surface: #171d3b;
+    --border: #2a3257;
+    --text: #f4f6fc;
+    --muted: #a5adba;
+    --accent: #4a9eff;
+    --accent-fill: #0065ff;
+    --accent-fill-hover: #1f7fef;
+    --accent-soft: #13254f;
+    --accent-strong: #80bbff;
+    --success: #3eecac;
+    --success-soft: #0d3326;
+    --attention: #ffc400;
+    --attention-soft: #2e2615;
+    /* Deep on a Deep page would vanish; the amount takes the brand blue. */
+    --amount-bg: var(--accent-fill);
   }
 }
 
@@ -33,61 +77,74 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 16px/1.55 var(--font);
+  -webkit-font-smoothing: antialiased;
 }
 
 main {
-  max-width: 640px;
+  max-width: 600px;
   margin: 0 auto;
-  padding: 32px 16px 96px;
+  padding: 24px 16px 96px;
 }
 
 .site-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.site-header > div {
   display: flex;
   align-items: center;
   gap: 10px;
-  max-width: 640px;
+  max-width: 600px;
   margin: 0 auto;
-  padding: 24px 16px 0;
+  padding: 16px;
 }
 
 .wordmark {
-  font-weight: 620;
-  letter-spacing: -0.01em;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: -0.02em;
   color: var(--text);
   text-decoration: none;
 }
 
 .badge {
   font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--muted);
-  border: 1px solid var(--border);
+  color: var(--afriex-deep);
+  background: var(--afriex-soft);
   border-radius: 999px;
-  padding: 2px 8px;
+  padding: 3px 9px;
 }
 
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 24px;
-  margin-bottom: 20px;
+  padding: 24px 20px;
+  margin-bottom: 16px;
 }
 
 h1 {
-  font-size: 22px;
-  letter-spacing: -0.015em;
-  margin: 0 0 6px;
+  font-family: var(--font-display);
+  font-size: 26px;
+  line-height: 1.15;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  margin: 0 0 10px;
+  text-wrap: balance;
 }
 
 h2 {
-  font-size: 15px;
+  font-size: 13px;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   color: var(--muted);
-  margin: 0 0 14px;
+  margin: 0 0 12px;
   font-weight: 600;
 }
 
@@ -97,32 +154,34 @@ p {
 
 .muted {
   color: var(--muted);
-  font-size: 14px;
+  font-size: 15px;
 }
 
 label {
   display: block;
-  font-size: 13px;
-  color: var(--muted);
-  margin-bottom: 5px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 6px;
 }
 
 input,
 select {
   width: 100%;
-  padding: 9px 11px;
+  padding: 11px 12px;
   font: inherit;
-  font-size: 15px;
+  font-size: 16px;
   color: var(--text);
-  background: var(--bg);
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--radius-control);
 }
 
 input:focus,
 select:focus {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
+  border-color: transparent;
 }
 
 .field {
@@ -143,13 +202,24 @@ select:focus {
 
 button {
   font: inherit;
-  font-weight: 560;
+  font-weight: 600;
   cursor: pointer;
-  border-radius: 7px;
+  border-radius: var(--radius-control);
   border: 1px solid transparent;
   padding: 10px 16px;
-  background: var(--accent);
-  color: var(--bg);
+  background: var(--accent-fill);
+  color: var(--on-accent);
+  transition: background-color 0.15s;
+}
+
+button:hover:not(:disabled) {
+  background: var(--accent-fill-hover);
+}
+
+button:focus-visible,
+a.button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 button:disabled {
@@ -159,37 +229,44 @@ button:disabled {
 
 button.wide {
   width: 100%;
-  padding: 12px;
+  padding: 14px;
 }
 
 button.ghost {
-  background: transparent;
-  color: var(--muted);
-  border-color: var(--border);
-  padding: 4px 9px;
-  font-size: 12px;
-  font-weight: 500;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  padding: 4px 10px;
+  font-size: 13px;
+}
+
+button.ghost:hover:not(:disabled) {
+  background: var(--accent-soft);
+  filter: brightness(0.96);
 }
 
 .line {
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  padding: 7px 0;
+  padding: 6px 0;
   font-size: 15px;
+}
+
+.line > span:last-child {
+  font-variant-numeric: tabular-nums;
 }
 
 .line.total {
   border-top: 1px solid var(--border);
   margin-top: 8px;
-  padding-top: 12px;
-  font-weight: 620;
-  font-size: 17px;
+  padding-top: 14px;
+  font-weight: 700;
+  font-size: 18px;
 }
 
 .instructions {
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 12px;
   overflow: hidden;
 }
 
@@ -215,7 +292,8 @@ button.ghost {
 }
 
 .instructions dt {
-  font-size: 13px;
+  font-size: 14px;
+  white-space: nowrap;
   color: var(--muted);
 }
 
@@ -225,25 +303,28 @@ button.ghost {
   align-items: center;
   gap: 10px;
   font-variant-numeric: tabular-nums;
-  font-weight: 560;
+  font-weight: 600;
   letter-spacing: 0.01em;
+  text-align: right;
 }
 
+/* The amount to send: the one number the shopper must get right. */
 .amount {
-  background: var(--accent-soft);
-  color: var(--accent);
-  padding: 14px 16px;
-  font-size: 19px;
-  font-weight: 640;
+  background: var(--amount-bg);
+  color: #ffffff;
+  padding: 16px;
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   font-variant-numeric: tabular-nums;
 }
 
 .note {
-  background: var(--warn-soft);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 11px 14px;
-  font-size: 14px;
+  background: var(--attention-soft);
+  border-radius: var(--radius-control);
+  padding: 12px 14px;
+  font-size: 15px;
   color: var(--text);
   margin: 16px 0 0;
 }
@@ -254,26 +335,26 @@ button.ghost {
   gap: 10px;
   font-size: 14px;
   color: var(--muted);
-  margin-top: 18px;
+  margin-top: 20px;
 }
 
 .pulse {
-  width: 9px;
-  height: 9px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: var(--warn);
+  background: var(--attention);
   animation: pulse 1.6s ease-in-out infinite;
   flex: none;
 }
 
 .pulse.done {
-  background: var(--accent);
+  background: var(--afriex-green);
   animation: none;
 }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.25; }
+  50% { opacity: 0.3; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -281,19 +362,18 @@ button.ghost {
 }
 
 .paid {
-  background: var(--accent-soft);
-  color: var(--accent);
-  border-radius: var(--radius);
-  padding: 18px;
+  background: var(--success-soft);
+  color: var(--success);
+  border-radius: 12px;
+  padding: 16px 18px;
   font-weight: 600;
 }
 
 .error {
-  background: var(--warn-soft);
-  border: 1px solid var(--border);
-  border-radius: 7px;
+  background: var(--attention-soft);
+  border-radius: var(--radius-control);
   padding: 12px 14px;
-  font-size: 14px;
+  font-size: 15px;
   white-space: pre-wrap;
   color: var(--text);
 }
@@ -301,7 +381,7 @@ button.ghost {
 /* --- Choosing how to pay ------------------------------------------------ */
 
 .section-title {
-  font-size: 17px;
+  font-size: 13px;
   margin: 28px 0 12px;
 }
 
@@ -317,9 +397,14 @@ button.ghost {
   align-items: flex-start;
   padding: 14px 16px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 12px;
   background: var(--surface);
   cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+.method:hover {
+  border-color: var(--accent);
 }
 
 .method:has(input:checked) {
@@ -344,6 +429,10 @@ button.ghost {
   gap: 2px;
 }
 
+.method strong {
+  font-weight: 600;
+}
+
 .method .muted {
   font-size: 14px;
   margin: 0;
@@ -354,29 +443,41 @@ button.ghost {
 .stack {
   display: grid;
   gap: 10px;
-  margin-top: 18px;
+  margin-top: 20px;
 }
 
 a.button {
   display: block;
   text-align: center;
   text-decoration: none;
-  font-weight: 560;
-  border-radius: 7px;
-  padding: 12px;
-  background: var(--accent);
-  color: var(--bg);
-  margin-top: 18px;
+  font-weight: 600;
+  border-radius: var(--radius-control);
+  padding: 14px;
+  background: var(--accent-fill);
+  color: var(--on-accent);
+  margin-top: 20px;
+  transition: background-color 0.15s;
 }
 
+a.button:hover {
+  background: var(--accent-fill-hover);
+}
+
+/* Afriex's secondary button: light blue, dark label. */
 button.ghost-button,
 a.button.ghost-button {
-  background: transparent;
+  background: var(--accent-soft);
   color: var(--text);
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
+}
+
+button.ghost-button:hover:not(:disabled),
+a.button.ghost-button:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
 }
 
 input[aria-invalid] {
-  border-color: var(--warn);
-  box-shadow: 0 0 0 1px var(--warn);
+  border-color: var(--attention);
+  box-shadow: 0 0 0 1px var(--attention);
 }

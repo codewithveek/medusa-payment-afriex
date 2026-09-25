@@ -311,7 +311,7 @@ export default function Order({ loaderData, actionData }: Route.ComponentProps) 
           {/* Back from Afriex, the shopper has most likely paid: going back to
               the page is the fallback, not the next step. */}
           <a className={returned ? "button wide ghost-button" : "button wide"} href={state.url}>
-            {returned ? "Didn't finish? Back to the payment page" : "Continue to payment"}
+            {returned ? "Back to the payment page" : "Continue to payment"}
           </a>
           <Waiting text="Waiting for Afriex to confirm your payment. This page updates itself." />
         </section>
