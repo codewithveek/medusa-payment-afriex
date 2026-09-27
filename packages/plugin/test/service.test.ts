@@ -45,8 +45,17 @@ const logger = {
   debug: vi.fn(),
 }
 
-function buildService() {
-  return new (AfriexPaymentProviderService as any)({ logger }, OPTIONS)
+function buildService(options: Record<string, unknown> = {}) {
+  return new (AfriexPaymentProviderService as any)({ logger }, { ...OPTIONS, ...options })
+}
+
+async function refusal(promise: Promise<unknown>) {
+  try {
+    await promise
+  } catch (error) {
+    return error as { code?: string; type?: string; message: string }
+  }
+  throw new Error("expected a refusal")
 }
 
 const VIRTUAL_ACCOUNT = {
@@ -128,6 +137,22 @@ describe("AfriexPaymentProviderService", () => {
       expect(() =>
         AfriexPaymentProviderService.validateOptions({ ...OPTIONS, environment: "sandbox" })
       ).toThrow(/environment/)
+    })
+
+    it("checks the country and the currency list it will rely on later", () => {
+      expect(() =>
+        AfriexPaymentProviderService.validateOptions({ ...OPTIONS, defaultCountryCode: "Nigeria" })
+      ).toThrow(/defaultCountryCode/)
+      expect(() =>
+        AfriexPaymentProviderService.validateOptions({ ...OPTIONS, bankTransfer: { currencies: ["Cedis"] } })
+      ).toThrow(/bankTransfer\.currencies/)
+      expect(() =>
+        AfriexPaymentProviderService.validateOptions({
+          ...OPTIONS,
+          defaultCountryCode: "ng",
+          bankTransfer: { currencies: ["GHS"] },
+        })
+      ).not.toThrow()
     })
   })
 
@@ -280,6 +305,84 @@ describe("AfriexPaymentProviderService", () => {
       expect(params).not.toHaveProperty("customerId")
     })
 
+    it("refuses a currency Afriex cannot collect by bank transfer, before asking Afriex", async () => {
+      const service = buildService()
+
+      for (const [currency_code, reason] of [
+        ["zar", /cannot collect ZAR/],
+        ["ugx", /mobile money, not by bank transfer/],
+        ["jpy", /does not list JPY/],
+      ] as const) {
+        const error = await refusal(service.initiatePayment(initiateInput({ currency_code })))
+        expect(error).toMatchObject({
+          type: "not_allowed",
+          code: "AFRIEX_BANK_TRANSFER_UNAVAILABLE_FOR_CURRENCY",
+        })
+        expect(logger.warn).toHaveBeenLastCalledWith(expect.stringMatching(reason))
+      }
+      expect(sdk.paymentMethods.createVirtualAccount).not.toHaveBeenCalled()
+    })
+
+    it("refuses a currency Afriex lists as coming soon, until the store confirms it", async () => {
+      const error = await refusal(buildService().initiatePayment(initiateInput({ currency_code: "ghs" })))
+      expect(error.code).toBe("AFRIEX_BANK_TRANSFER_UNAVAILABLE_FOR_CURRENCY")
+      expect(logger.warn).toHaveBeenLastCalledWith(
+        expect.stringMatching(/coming soon.*bankTransfer\.currencies/)
+      )
+
+      await buildService({ bankTransfer: { currencies: ["GHS"] } }).initiatePayment(
+        initiateInput({ currency_code: "ghs" })
+      )
+      expect(sdk.paymentMethods.createVirtualAccount).toHaveBeenCalledWith(
+        expect.objectContaining({ currency: "GHS" })
+      )
+    })
+
+    it("takes the country from the currency when the shopper gave no address", async () => {
+      // KES names Kenya. No store default is needed, and Nigeria is never assumed.
+      await buildService().initiatePayment(
+        initiateInput({
+          currency_code: "kes",
+          context: { customer: { id: "cus_medusa", email: "ada@example.com", phone: "+254700000000" } },
+        } as Partial<InitiatePaymentInput>)
+      )
+
+      const [params] = sdk.paymentMethods.createVirtualAccount.mock.calls[0]!
+      expect(params).toMatchObject({ currency: "KES", country: "KE" })
+      expect(params).not.toHaveProperty("customerId")
+    })
+
+    it("names no country when neither the address nor the currency says", async () => {
+      // XOF is used across several countries; the plugin will not pick one.
+      await buildService({ bankTransfer: { currencies: ["XOF"] } }).initiatePayment(
+        initiateInput({
+          currency_code: "xof",
+          context: { customer: { id: "cus_medusa", email: "ada@example.com", phone: "+22990000000" } },
+        } as Partial<InitiatePaymentInput>)
+      )
+
+      const [params] = sdk.paymentMethods.createVirtualAccount.mock.calls[0]!
+      expect(params).toMatchObject({ currency: "XOF" })
+      expect(params).not.toHaveProperty("country")
+    })
+
+    it("tells the shopper to choose another method, and the log why, while Afriex still reviews the currency", async () => {
+      sdk.paymentMethods.createVirtualAccount.mockRejectedValueOnce(
+        Object.assign(new Error("Virtual account creation is pending compliance review"), {
+          errorCode: "VIRTUAL_ACCOUNT_PENDING_COMPLIANCE_REVIEW",
+          statusCode: 400,
+        })
+      )
+
+      const error = await refusal(buildService().initiatePayment(initiateInput({ currency_code: "usd" })))
+
+      expect(error).toMatchObject({ type: "not_allowed", code: "AFRIEX_BANK_TRANSFER_AWAITING_APPROVAL" })
+      expect(error.message).toMatch(/isn't available for USD payments yet/)
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringMatching(/not approved USD.*PENDING_COMPLIANCE_REVIEW/)
+      )
+    })
+
     it("rejects an account with no account number, which the customer could not pay into", async () => {
       const service = buildService()
       sdk.paymentMethods.createVirtualAccount.mockResolvedValueOnce({
@@ -305,6 +408,16 @@ describe("AfriexPaymentProviderService", () => {
         expect.objectContaining({ email: "ada@example.com", phone: "+2348012345678", countryCode: "NG" })
       )
       expect(result).toEqual({ id: "cus_1", data: { customerId: "cus_1" } })
+    })
+
+    it("registers a shopper with no address only when the store named a default country", async () => {
+      const customer = { id: "cus_medusa", email: "ada@example.com", phone: "+2348012345678" }
+
+      expect(await buildService().createAccountHolder({ context: { customer } })).toEqual({})
+      expect(sdk.customers.create).not.toHaveBeenCalled()
+
+      await buildService({ defaultCountryCode: "ng" }).createAccountHolder({ context: { customer } })
+      expect(sdk.customers.create).toHaveBeenCalledWith(expect.objectContaining({ countryCode: "NG" }))
     })
 
     it("creates nothing for a shopper without the contact details Afriex requires", async () => {

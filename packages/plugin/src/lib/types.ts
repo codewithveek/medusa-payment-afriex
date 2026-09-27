@@ -11,18 +11,34 @@ export type AfriexCheckoutOptions = {
   allowedReturnOrigins?: string[]
   /** The channels checkout may offer at most. Afriex drops those a currency cannot collect. */
   channels?: AfriexCheckoutChannel[]
-  /** Optional: the channels checkout is known to collect in each currency. */
+  /**
+   * What checkout can collect in a currency, when Afriex's published coverage
+   * (`lib/coverage.ts`) is behind. A currency named here uses this list instead.
+   */
   currencyChannels?: Record<string, AfriexCheckoutChannel[]>
-  /** The minor-unit exponent Afriex uses, for currencies whose exponent is not 2. */
+  /** The minor-unit exponent Afriex uses, where it differs from ISO 4217. */
   minorUnitExponents?: Record<string, number>
+}
+
+export type AfriexBankTransferOptions = {
+  /**
+   * Currencies Afriex has confirmed it opens virtual accounts in for this
+   * store, beyond the ones its published coverage lists as live.
+   */
+  currencies?: string[]
 }
 
 export type AfriexProviderOptions = {
   apiKey: string
   environment: "staging" | "production"
   webhookPublicKey: string
-  /** Used when the cart has no billing address to infer the country from. */
+  /**
+   * The country to assume when neither the address nor the currency says.
+   * Optional: most currencies name their country.
+   */
   defaultCountryCode?: string
+  /** Bank transfer settings. Optional. */
+  bankTransfer?: AfriexBankTransferOptions
   /** Afriex hosted checkout. Optional: bank transfer works without it. */
   checkout?: AfriexCheckoutOptions
 }

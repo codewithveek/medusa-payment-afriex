@@ -10,13 +10,14 @@ import { countryFromE164, toE164 } from "../src/lib/phone"
 import { buildRedirectUrl, returnUrlProblem } from "../src/lib/return-url"
 
 describe("minor units", () => {
-  it("uses two decimals only where the currency has two", () => {
+  it("knows each currency's smallest unit, and lets the store override it", () => {
     expect(minorUnitExponent("ngn", undefined)).toBe(2)
     expect(minorUnitExponent("KES", undefined)).toBe(2)
-    expect(minorUnitExponent("XOF", undefined)).toBeUndefined()
-    expect(minorUnitExponent("UGX", undefined)).toBeUndefined()
-    expect(minorUnitExponent("KWD", undefined)).toBeUndefined()
-    expect(minorUnitExponent("XOF", { XOF: 0 })).toBe(0)
+    // A franc or a shilling has no smaller coin: the whole unit is the minor unit.
+    expect(minorUnitExponent("XOF", undefined)).toBe(0)
+    expect(minorUnitExponent("UGX", undefined)).toBe(0)
+    expect(minorUnitExponent("KWD", undefined)).toBe(3)
+    expect(minorUnitExponent("XOF", { XOF: 2 })).toBe(2)
   })
 
   it("rounds half up and reports what is actually charged", () => {

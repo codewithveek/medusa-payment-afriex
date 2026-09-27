@@ -7,7 +7,8 @@ vi.mock("@medusajs/medusa/core-flows", () => ({
 }))
 
 import { AfriexAdminError } from "../src/lib/admin-error"
-import { getRegionMethods, setRegionMethod } from "../src/lib/region-methods"
+import { describeRegionMethods, getRegionMethods, setRegionMethod } from "../src/lib/region-methods"
+import { GET as storeMethods } from "../src/api/store/afriex/methods/route"
 
 const BANK = "pp_afriex_afriex"
 const CHECKOUT = "pp_afriex-checkout_afriex"
@@ -67,9 +68,10 @@ const within = (value: string, filter: string | string[]) =>
 function container(
   linked: string[],
   registered = ["pp_system_default", "pp_stripe_stripe", BANK, CHECKOUT],
-  regionId = "reg_ng"
+  regionId = "reg_ng",
+  currency = "ngn"
 ) {
-  const region = { id: regionId, payment_providers: linked.map((id) => ({ id })) }
+  const region = { id: regionId, currency_code: currency, payment_providers: linked.map((id) => ({ id })) }
 
   updateRegions.mockImplementation(async ({ input }: any) => {
     region.payment_providers = input.update.payment_providers.map((id: string) => ({ id }))
@@ -117,11 +119,61 @@ describe("Afriex payment methods per region", () => {
     // c3 (link expired), c5 (failed) or c6 (another region).
     expect(result).toEqual({
       region_id: "reg_ng",
+      currency_code: "NGN",
       methods: [
-        { provider_id: BANK, method: "bank_transfer", enabled: true, waiting: 2 },
-        { provider_id: CHECKOUT, method: "checkout", enabled: false, waiting: 2 },
+        {
+          provider_id: BANK,
+          method: "bank_transfer",
+          enabled: true,
+          waiting: 2,
+          available: true,
+          unavailable_reason: null,
+          channels: ["VIRTUAL_BANK_ACCOUNT"],
+        },
+        {
+          provider_id: CHECKOUT,
+          method: "checkout",
+          enabled: false,
+          waiting: 2,
+          available: true,
+          unavailable_reason: null,
+          // What Afriex's page offers in NGN: the virtual account alone.
+          channels: ["VIRTUAL_BANK_ACCOUNT"],
+        },
       ],
     })
+  })
+
+  it("says when Afriex cannot collect the region's currency a given way, and why", async () => {
+    const ghana = await getRegionMethods(container([BANK, CHECKOUT], undefined, "reg_gh", "ghs"), "reg_gh")
+
+    expect(ghana.currency_code).toBe("GHS")
+    expect(ghana.methods).toEqual([
+      expect.objectContaining({
+        method: "bank_transfer",
+        enabled: true,
+        available: false,
+        unavailable_reason: expect.stringMatching(/GHS virtual accounts yet/),
+        channels: [],
+      }),
+      expect.objectContaining({
+        method: "checkout",
+        enabled: true,
+        available: false,
+        unavailable_reason: expect.stringMatching(/cannot collect GHS yet/),
+      }),
+    ])
+
+    const kenya = await describeRegionMethods(container([CHECKOUT], undefined, "reg_ke", "kes"), "reg_ke")
+    expect(kenya.methods).toEqual([
+      expect.objectContaining({ method: "bank_transfer", enabled: false, available: true, channels: ["VIRTUAL_BANK_ACCOUNT"] }),
+      expect.objectContaining({
+        method: "checkout",
+        enabled: true,
+        available: true,
+        channels: ["VIRTUAL_BANK_ACCOUNT", "MOBILE_MONEY"],
+      }),
+    ])
   })
 
   it("counts nothing waiting in a region no payment belongs to", async () => {
@@ -188,5 +240,35 @@ describe("Afriex payment methods per region", () => {
       setRegionMethod(container([]), { regionId: "reg_nope", providerId: BANK, enabled: true }),
       "AFRIEX_REGION_NOT_FOUND"
     )
+  })
+})
+
+describe("what a storefront asks: GET /store/afriex/methods", () => {
+  const respond = () => {
+    const res: any = { status: vi.fn(() => res), json: vi.fn(() => res) }
+    return res
+  }
+
+  it("needs a region, and answers what to offer there", async () => {
+    let res = respond()
+    await storeMethods({ query: {}, scope: container([BANK]) } as any, res)
+    expect(res.status).toHaveBeenCalledWith(400)
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: "AFRIEX_INVALID_REQUEST" }))
+
+    res = respond()
+    await storeMethods({ query: { region_id: "reg_ng" }, scope: container([BANK, CHECKOUT]) } as any, res)
+    expect(res.status).toHaveBeenCalledWith(200)
+    expect(res.json).toHaveBeenCalledWith({
+      region_id: "reg_ng",
+      currency_code: "NGN",
+      methods: [
+        expect.objectContaining({ method: "bank_transfer", enabled: true, available: true }),
+        expect.objectContaining({ method: "checkout", enabled: true, available: true, channels: ["VIRTUAL_BANK_ACCOUNT"] }),
+      ],
+    })
+
+    res = respond()
+    await storeMethods({ query: { region_id: "reg_missing" }, scope: container([BANK]) } as any, res)
+    expect(res.status).toHaveBeenCalledWith(404)
   })
 })

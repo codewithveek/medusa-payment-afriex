@@ -229,7 +229,7 @@ is asked to choose another option.
 > and its payments can no longer be recorded.
 
 The region's currency decides who owns a bank-transfer virtual account. See
-[Currencies](#currencies).
+[Countries and currencies](#countries-and-currencies).
 
 ✅ **You should see:** the methods you turned on listed under the region's
 payment providers, and offered at checkout in that region.
@@ -259,6 +259,15 @@ reach you, see [Testing](#testing).
 
 This uses the [Medusa JS SDK](https://docs.medusajs.com/resources/js-sdk). Wire
 up the methods you turned on.
+
+**Which methods to show.** Ask the plugin, not Medusa's provider list: a method
+can be turned on in a region whose currency Afriex cannot collect, and the
+plugin knows which. `GET /store/afriex/methods?region_id=…` (with the
+publishable key) answers, for each Afriex method, whether it is `enabled` in the
+region, whether it is `available` — Afriex collects that currency this way —
+and, for Afriex Checkout, the `channels` its page will offer there, so your
+wording can say "mobile money" in Kenya and "bank transfer" in Nigeria. Show the
+methods that are both. See [Countries and currencies](#countries-and-currencies).
 
 #### 7a. Bank transfer
 
@@ -436,6 +445,8 @@ the origin of `returnUrl` or one listed in `allowedReturnOrigins`.
 | `AFRIEX_METHOD_UNAVAILABLE`                | 400  | The method was turned off for the region after the order was placed | Offer the other methods                                     |
 | `AFRIEX_CHECKOUT_REFUSED`                  | 400  | Afriex refused the payment link                                   | Show `message`; offer another method                          |
 | `AFRIEX_CHECKOUT_TEMPORARILY_UNAVAILABLE`  | 500  | Afriex could not be reached or failed, or the reference was already in use | "Please try again". The order keeps waiting                   |
+| `AFRIEX_BANK_TRANSFER_UNAVAILABLE_FOR_CURRENCY` | 400 | Afriex does not open virtual accounts in the order's currency        | Offer another method. `GET /store/afriex/methods` would have said so |
+| `AFRIEX_BANK_TRANSFER_AWAITING_APPROVAL`   | 400  | Afriex has not yet approved your store to collect this currency by virtual account | Offer another method; the log names the currency. Ask Afriex support |
 
 ✅ **You should see:** the order placed as awaiting payment, the shopper sent to
 Afriex's page, and the order turning paid shortly after they pay.
@@ -481,8 +492,15 @@ before you take real customers.
 | `apiKey`             | Your Afriex API key.                                                                | Yes      |               |
 | `environment`        | `"staging"` or `"production"`. Must match where the keys came from.                 | Yes      |               |
 | `webhookPublicKey`   | Afriex's PEM public key, used to verify every webhook.                              | Yes      |               |
-| `defaultCountryCode` | Two-letter country used when the shopper has no saved billing address.              | No       | `"NG"`        |
+| `defaultCountryCode` | Two-letter country to assume when neither the address nor the currency says. Most currencies name their country (KES is Kenya's); XOF and EUR do not. | No | none |
+| `bankTransfer`       | Bank transfer settings, below.                                                      | No       |               |
 | `checkout`           | Afriex Checkout settings, below. Leave it out to offer bank transfer only.          | No       |               |
+
+**`bankTransfer`**
+
+| Option       | Description                                                                                                                              | Default |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| `currencies` | Currencies Afriex has confirmed it opens virtual accounts in for your store, beyond those its coverage page lists as live, like `["GHS"]`. | `[]`    |
 
 **`checkout`**
 
@@ -491,10 +509,51 @@ before you take real customers.
 | `returnUrl`            | Where Afriex sends the shopper back to. HTTPS. `{order_id}` in the path is replaced with the order's id. Checkout refuses to start without it. |                            |
 | `allowedReturnOrigins` | Other HTTPS origins, like `"https://shop.example.com"`, that a storefront's `return_url` may use.                                       | `[]`                       |
 | `channels`             | The most checkout may offer: `VIRTUAL_BANK_ACCOUNT`, `MOBILE_MONEY`, `CARD`. `CARD` is not sent yet: the Afriex SDK does not accept it. | All of them                |
-| `currencyChannels`     | Optional. What each currency can collect, like `{ NGN: ["VIRTUAL_BANK_ACCOUNT"], GHS: ["MOBILE_MONEY"] }`. A currency listed with nothing in common with `channels` is refused before the order is placed. |                            |
-| `minorUnitExponents`   | Decimal places Afriex uses for a currency that does not have two, like `{ XOF: 0 }`. Such a currency is refused until you set it, because a wrong guess charges 100× too much or too little. |                            |
+| `currencyChannels`     | What Afriex's page can collect in a currency, like `{ GHS: ["MOBILE_MONEY"] }`, when Afriex's coverage page is behind. A currency named here uses this list instead of the built-in one. | Afriex's published coverage |
+| `minorUnitExponents`   | Decimal places for a currency, where Afriex counts differently from ISO 4217, like `{ XOF: 2 }`. By default a franc or a shilling with no smaller coin is sent as a whole unit. | ISO 4217                   |
 
-## Currencies
+## Countries and currencies
+
+Afriex collects money in some 30 currencies, but not every way everywhere. The
+plugin carries Afriex's published coverage (its "Supported Currencies & Payment
+Rails" page, deposit rails only) and applies it before anything reaches Afriex:
+
+| Region currency | Bank transfer (virtual account) | Afriex Checkout offers |
+| --- | --- | --- |
+| NGN | Yes | Bank transfer |
+| KES | Yes | Bank transfer, mobile money |
+| USD | Yes | Bank transfer |
+| UGX, TZS, ETB, XAF (Cameroon), XOF (Benin, Côte d'Ivoire) | No | Mobile money |
+| GHS, GBP, EUR, RWF, ZMW, MWK, MZN, SLE, and others Afriex lists as *coming soon* | Not yet | Not yet |
+| ZAR, EGP, INR, CNY, and anything Afriex does not list | No | No |
+
+Cards are left to Afriex: the plugin never rules on them, and Afriex's page
+shows a card option where it has one.
+
+What that means in practice:
+
+- **The store only offers what works.** `GET /store/afriex/methods` says which
+  methods are available in a region; the Settings page and each region's page
+  say why one is not ("Afriex collects UGX by mobile money, not by bank
+  transfer"). A method that is on where Afriex cannot collect refuses every
+  shopper with `AFRIEX_BANK_TRANSFER_UNAVAILABLE_FOR_CURRENCY` or
+  `AFRIEX_CHECKOUT_UNAVAILABLE_FOR_CURRENCY`, on the cart, before any order
+  exists — and the Settings page flags it.
+- **When Afriex goes live somewhere before this plugin catches up**, say so in
+  your options: `bankTransfer.currencies: ["GHS"]` or
+  `checkout.currencyChannels: { GHS: ["MOBILE_MONEY"] }`. Your word wins.
+- **Each currency needs Afriex's approval for your store** before the first
+  virtual account can be opened in it. Until then bank transfer in that
+  currency answers `AFRIEX_BANK_TRANSFER_AWAITING_APPROVAL`, the log names the
+  currency, and the Settings page says where to look.
+- **The country comes from the order.** The billing address first; else the
+  country the currency belongs to (KES is Kenya's); else `defaultCountryCode`.
+  Nothing is ever assumed.
+- **Smallest units.** Afriex's page takes amounts in a currency's smallest
+  unit. For a franc or a shilling with no smaller coin (XOF, XAF, UGX, RWF…)
+  that is the whole unit, per ISO 4217; `minorUnitExponents` overrides it.
+
+### Who owns a virtual account
 
 Afriex opens a virtual account **for a customer** in NGN only. The plugin follows that:
 
@@ -505,8 +564,7 @@ Afriex opens a virtual account **for a customer** in NGN only. The plugin follow
 | Any other currency                                 | Your business                                                       |
 
 Either way the shopper sees an account to pay into and the order is matched the
-same way. Whether Afriex can open a business virtual account in a given currency
-depends on your Afriex account, so confirm that for each currency you sell in.
+same way.
 
 Afriex limits how many virtual accounts can be open at once per customer and
 currency. The plugin closes an account when its payment is cancelled, when

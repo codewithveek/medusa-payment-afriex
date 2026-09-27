@@ -5,11 +5,18 @@ import { useCallback, useEffect, useState } from "react"
 import { call } from "../lib/api"
 import { AfriexMark } from "../lib/afriex-mark"
 
+type Channel = "VIRTUAL_BANK_ACCOUNT" | "MOBILE_MONEY" | "CARD"
+
 type Method = {
   provider_id: string
   method: "bank_transfer" | "checkout"
   enabled: boolean
   waiting: number
+  /** Afriex can collect this region's currency this way. */
+  available: boolean
+  unavailable_reason: string | null
+  /** Checkout: what Afriex's page offers in this currency. */
+  channels: Channel[]
 }
 
 const COPY: Record<Method["method"], { title: string; description: string }> = {
@@ -20,10 +27,19 @@ const COPY: Record<Method["method"], { title: string; description: string }> = {
   },
   checkout: {
     title: "Afriex Checkout",
-    description:
-      "The shopper pays on a secure Afriex page, by mobile money or bank transfer, then comes back to your store.",
+    description: "The shopper pays on a secure Afriex page, then comes back to your store.",
   },
 }
+
+const CHANNEL_LABEL: Record<Channel, string> = {
+  VIRTUAL_BANK_ACCOUNT: "bank transfer",
+  MOBILE_MONEY: "mobile money",
+  CARD: "card",
+}
+
+/** "bank transfer and mobile money" */
+const channelList = (channels: Channel[]) =>
+  channels.map((channel) => CHANNEL_LABEL[channel] ?? channel).join(" and ")
 
 /**
  * Turns each Afriex payment method on or off for this region. It edits the
@@ -145,6 +161,7 @@ const AfriexRegionWidget = ({ data: region }: DetailWidgetProps<AdminRegion>) =>
       {methods?.map((method) => {
         const { title, description } = COPY[method.method]
         const inputId = `afriex-${method.provider_id}`
+        const currency = region.currency_code.toUpperCase()
 
         return (
           <div key={method.provider_id} className="flex items-start justify-between gap-x-4 px-6 py-4">
@@ -160,10 +177,24 @@ const AfriexRegionWidget = ({ data: region }: DetailWidgetProps<AdminRegion>) =>
                     {method.waiting} waiting for payment
                   </Badge>
                 ) : null}
+                {!method.available ? (
+                  <Badge size="2xsmall" color="grey">
+                    Can't collect {currency}
+                  </Badge>
+                ) : null}
               </div>
               <Text size="small" className="text-ui-fg-subtle">
                 {description}
+                {method.available && method.method === "checkout" && method.channels.length
+                  ? ` In ${currency} the page offers ${channelList(method.channels)}.`
+                  : ""}
               </Text>
+              {!method.available ? (
+                <Text size="small" className="text-ui-fg-subtle">
+                  {method.unavailable_reason}
+                  {method.enabled ? " Shoppers who pick it are refused; turn it off here." : ""}
+                </Text>
+              ) : null}
             </div>
             <Switch
               id={inputId}

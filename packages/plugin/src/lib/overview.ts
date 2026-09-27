@@ -11,11 +11,13 @@ import {
 } from "./constants"
 import { AFRIEX_WEBHOOK_MODULE } from "../modules/afriex-webhook"
 import { AFRIEX_PAYMENTS_MODULE } from "../modules/afriex-payments"
+import { methodAvailability } from "./method-availability"
+import { readProviderOptions } from "./provider-options"
 import type { GraphQuery } from "./reconciliation"
 import { readAfriexSettings, type AfriexSettings } from "./settings"
 import { mayStillReceiveMoney, type WaitingSession } from "./region-methods"
 import type { LatePayment } from "./ledger"
-import type { AfriexSessionBase } from "./types"
+import type { AfriexProviderOptions, AfriexSessionBase } from "./types"
 
 const SCAN_LIMIT = 1000
 const HELD_STATUSES = [
@@ -36,6 +38,8 @@ export type OverviewRegion = {
   currency_code: string
   /** Provider ids of the Afriex methods this region offers. */
   methods: string[]
+  /** Per Afriex provider id: whether it can collect this region's currency, and why not. */
+  availability: Record<string, { available: boolean; reason: string | null }>
 }
 
 export type OverviewMethod = {
@@ -108,14 +112,35 @@ export async function getAfriexOverview(container: MedusaContainer): Promise<Afr
         AFRIEX_METHODS.indexOf(afriexMethodOf(a)!) - AFRIEX_METHODS.indexOf(afriexMethodOf(b)!)
     )
 
-  const overviewRegions: OverviewRegion[] = regions.map((region) => ({
-    id: region.id,
-    name: region.name,
-    currency_code: region.currency_code,
-    methods: (region.payment_providers ?? [])
+  const options = readProviderOptions(container)
+  const settings = await readAfriexSettings(container)
+
+  const overviewRegions: OverviewRegion[] = regions.map((region) => {
+    const methods = (region.payment_providers ?? [])
       .map((provider) => provider.id)
-      .filter((id) => afriexMethodOf(id)),
-  }))
+      .filter((id) => afriexMethodOf(id))
+    const bankTransferHere = methods.some((id) => afriexMethodOf(id) === "bank_transfer")
+
+    return {
+      id: region.id,
+      name: region.name,
+      currency_code: region.currency_code,
+      methods,
+      availability: Object.fromEntries(
+        registered.map((providerId) => {
+          const result = methodAvailability(afriexMethodOf(providerId)!, region.currency_code, {
+            options,
+            settings,
+            bankTransferHere,
+          })
+          return [
+            providerId,
+            { available: result.available, reason: result.available ? null : result.reason },
+          ]
+        })
+      ),
+    }
+  })
 
   const now = Date.now()
   const methods: OverviewMethod[] = []
@@ -190,10 +215,10 @@ export async function getAfriexOverview(container: MedusaContainer): Promise<Afr
   return {
     webhook_path: AFRIEX_WEBHOOK_PATH,
     last_webhook: await lastWebhook(container),
-    setup: await setupChecks(container, registered, overviewRegions),
+    setup: await setupChecks(container, registered, overviewRegions, options),
     regions: overviewRegions,
     methods,
-    settings: await readAfriexSettings(container),
+    settings,
     attention,
   }
 }
@@ -328,7 +353,8 @@ async function lastWebhook(
 async function setupChecks(
   container: MedusaContainer,
   registered: string[],
-  regions: OverviewRegion[]
+  regions: OverviewRegion[],
+  options: AfriexProviderOptions | undefined
 ): Promise<SetupCheck[]> {
   const checks: SetupCheck[] = []
 
@@ -359,9 +385,31 @@ async function setupChecks(
             message: `${label} is registered but not on in any region, so no shopper is offered it.`,
           }
     )
+
+    // On somewhere Afriex cannot collect: every shopper who picks it there is
+    // refused, so it should be off, or the store's settings changed.
+    for (const region of on) {
+      const availability = region.availability[providerId]
+      if (availability && !availability.available) {
+        checks.push({
+          id: `${method}:cannot_collect:${region.id}`,
+          level: "warn",
+          message: `${label} is on in ${region.name} (${region.currency_code.toUpperCase()}), but ${availability.reason} Shoppers there are refused it — turn it off in ${region.name}.`,
+        })
+      }
+    }
+
+    if (method === "bank_transfer" && on.length) {
+      checks.push({
+        id: "bank_transfer:approval",
+        level: "advice",
+        message:
+          "Afriex approves each currency for your store before the first virtual account can be opened in it. If shoppers are told bank transfer \"isn't available yet\", that review is still running: the server log names the currency, and Afriex support can say where it stands.",
+      })
+    }
   }
 
-  const returnUrl = checkoutReturnUrl(container)
+  const returnUrl = checkoutReturnUrl(options)
   if (registered.some((id) => afriexMethodOf(id) === "checkout")) {
     checks.push(
       returnUrl === false
@@ -408,34 +456,14 @@ async function setupChecks(
 }
 
 /**
- * The configured return URL, read from the app's own config: `false` when
- * checkout is registered without one, a string when it is set, and `undefined`
- * when the config cannot be read at all (in which case nothing is claimed).
+ * The configured return URL: `false` when checkout is registered without one,
+ * a string when it is set, and `undefined` when the config could not be read
+ * at all (in which case nothing is claimed).
  */
-function checkoutReturnUrl(container: MedusaContainer): string | false | undefined {
-  try {
-    const config = container.resolve<{
-      modules?: unknown
-    }>(ContainerRegistrationKeys.CONFIG_MODULE)
-
-    const modules = Array.isArray(config?.modules)
-      ? config.modules
-      : Object.values((config?.modules ?? {}) as Record<string, unknown>)
-
-    for (const entry of modules as { options?: { providers?: unknown } }[]) {
-      for (const provider of (entry?.options?.providers ?? []) as {
-        resolve?: unknown
-        options?: { checkout?: { returnUrl?: unknown } }
-      }[]) {
-        if (typeof provider?.resolve === "string" && provider.resolve.includes("afriex")) {
-          const url = provider.options?.checkout?.returnUrl
-          return typeof url === "string" && url ? url : false
-        }
-      }
-    }
-  } catch {
-    // Nothing claimed when the config cannot be read.
+function checkoutReturnUrl(options: AfriexProviderOptions | undefined): string | false | undefined {
+  if (!options) {
+    return undefined
   }
-
-  return undefined
+  const url = options.checkout?.returnUrl
+  return typeof url === "string" && url ? url : false
 }

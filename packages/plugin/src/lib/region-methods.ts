@@ -1,20 +1,41 @@
 import { updateRegionsWorkflow } from "@medusajs/medusa/core-flows"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import type { IPaymentModuleService, MedusaContainer } from "@medusajs/framework/types"
+import { effectiveChannels } from "./checkout-channels"
 import { afriexMethodOf, type AfriexMethod } from "./constants"
 import { AfriexAdminError } from "./admin-error"
+import { methodAvailability } from "./method-availability"
+import { readProviderOptions } from "./provider-options"
 import type { GraphQuery } from "./reconciliation"
-import type { AfriexCheckoutSessionData } from "./types"
+import { readAfriexSettings } from "./settings"
+import type { AfriexCheckoutChannel, AfriexCheckoutSessionData } from "./types"
 
-export type RegionMethod = {
+/** One Afriex method, as a region offers it — or cannot. */
+export type OfferedMethod = {
   provider_id: string
   method: AfriexMethod
+  /** Turned on in this region. */
   enabled: boolean
+  /** Afriex can collect the region's currency this way, under the store's settings. */
+  available: boolean
+  /** Why not, in an admin's words, when it cannot. */
+  unavailable_reason: string | null
+  /** Checkout: what Afriex's page would offer in this currency. Bank transfer: its one rail. */
+  channels: AfriexCheckoutChannel[]
+}
+
+export type RegionMethod = OfferedMethod & {
   /**
    * Payments in this region the shopper has been given the means to make — an
    * account, or an open payment link — and has not made yet.
    */
   waiting: number
+}
+
+export type RegionOffer = {
+  region_id: string
+  currency_code: string | null
+  methods: OfferedMethod[]
 }
 
 /** Statuses of a session that has not been paid, cancelled or failed. */
@@ -30,31 +51,77 @@ export type WaitingSession = {
 }
 
 /**
- * Which Afriex payment methods are turned on in a region. The region's link to
- * the payment provider is the only on/off switch — the same one Medusa's own
- * region settings edit, and the one Medusa enforces when listing, starting and
- * completing payments.
+ * Which Afriex methods a region offers, and which of those Afriex can actually
+ * collect in the region's currency. The region's link to the payment provider
+ * is the only on/off switch — the same one Medusa's own region settings edit,
+ * and the one Medusa enforces when listing, starting and completing payments.
+ * Whether the currency can be collected is Afriex's coverage, under the
+ * store's own settings.
  */
-export async function getRegionMethods(
+export async function describeRegionMethods(
   container: MedusaContainer,
   regionId: string
-): Promise<{ region_id: string; methods: RegionMethod[] }> {
-  const linked = await linkedProviders(container, regionId)
+): Promise<RegionOffer> {
+  const region = await regionLink(container, regionId)
   const paymentModule = container.resolve<IPaymentModuleService>(Modules.PAYMENT)
   const providers = await paymentModule.listPaymentProviders({}, { select: ["id"] })
-  const now = Date.now()
 
-  const candidates: { providerId: string; method: AfriexMethod; sessions: WaitingSession[] }[] = []
+  const options = readProviderOptions(container)
+  const settings = await readAfriexSettings(container)
+  const bankTransferHere = region.providers.some(
+    (id) => afriexMethodOf(id) === "bank_transfer"
+  )
+
+  const methods: OfferedMethod[] = []
   for (const provider of providers) {
     const method = afriexMethodOf(provider.id)
     if (!method) {
       continue
     }
 
+    // A region always has a currency; only a test double lacks one. Nothing is
+    // claimed then.
+    const availability = region.currency
+      ? methodAvailability(method, region.currency, { options, settings, bankTransferHere })
+      : {
+          available: true as const,
+          channels:
+            method === "bank_transfer"
+              ? (["VIRTUAL_BANK_ACCOUNT"] as AfriexCheckoutChannel[])
+              : effectiveChannels({
+                  configured: options?.checkout?.channels,
+                  adminChoice: settings.checkoutChannels,
+                }),
+        }
+
+    methods.push({
+      provider_id: provider.id,
+      method,
+      enabled: region.providers.includes(provider.id),
+      available: availability.available,
+      unavailable_reason: availability.available ? null : availability.reason,
+      channels: availability.channels,
+    })
+  }
+
+  return { region_id: regionId, currency_code: region.currency ?? null, methods }
+}
+
+/** `describeRegionMethods`, plus what is still waiting for money on each method here. */
+export async function getRegionMethods(
+  container: MedusaContainer,
+  regionId: string
+): Promise<{ region_id: string; currency_code: string | null; methods: RegionMethod[] }> {
+  const offer = await describeRegionMethods(container, regionId)
+  const paymentModule = container.resolve<IPaymentModuleService>(Modules.PAYMENT)
+  const now = Date.now()
+
+  const candidates: { offered: OfferedMethod; sessions: WaitingSession[] }[] = []
+  for (const offered of offer.methods) {
     // The payment module cannot filter sessions by status, so the most recent
     // ones are read and counted here.
     const recent = (await paymentModule.listPaymentSessions(
-      { provider_id: provider.id },
+      { provider_id: offered.provider_id },
       {
         select: ["id", "status", "payment_collection_id", "data"],
         take: WAITING_COUNT_LIMIT,
@@ -63,9 +130,8 @@ export async function getRegionMethods(
     )) as unknown as WaitingSession[]
 
     candidates.push({
-      providerId: provider.id,
-      method,
-      sessions: recent.filter((session) => mayStillReceiveMoney(method, session, now)),
+      offered,
+      sessions: recent.filter((session) => mayStillReceiveMoney(offered.method, session, now)),
     })
   }
 
@@ -79,10 +145,9 @@ export async function getRegionMethods(
 
   return {
     region_id: regionId,
-    methods: candidates.map(({ providerId, method, sessions }) => ({
-      provider_id: providerId,
-      method,
-      enabled: linked.includes(providerId),
+    currency_code: offer.currency_code,
+    methods: candidates.map(({ offered, sessions }) => ({
+      ...offered,
       waiting: sessions.filter((session) => inRegion.has(session.payment_collection_id ?? ""))
         .length,
     })),
@@ -188,7 +253,7 @@ async function collectionsInRegion(
 export async function setRegionMethod(
   container: MedusaContainer,
   input: { regionId: string; providerId: string; enabled: boolean; confirmEmpty?: boolean }
-): Promise<{ region_id: string; methods: RegionMethod[] }> {
+): Promise<{ region_id: string; currency_code: string | null; methods: RegionMethod[] }> {
   if (!afriexMethodOf(input.providerId)) {
     throw new AfriexAdminError(
       "AFRIEX_NOT_AN_AFRIEX_PROVIDER",
@@ -210,7 +275,7 @@ export async function setRegionMethod(
     )
   }
 
-  const linked = await linkedProviders(container, input.regionId)
+  const linked = (await regionLink(container, input.regionId)).providers
   const next = input.enabled
     ? [...new Set([...linked, input.providerId])]
     : linked.filter((id) => id !== input.providerId)
@@ -232,19 +297,26 @@ export async function setRegionMethod(
   return getRegionMethods(container, input.regionId)
 }
 
-async function linkedProviders(container: MedusaContainer, regionId: string): Promise<string[]> {
+/** The region's currency and every payment provider it links to. */
+async function regionLink(
+  container: MedusaContainer,
+  regionId: string
+): Promise<{ providers: string[]; currency: string | undefined }> {
   const query = container.resolve<GraphQuery>(ContainerRegistrationKeys.QUERY)
   const [region] = (
     await query.graph({
       entity: "region",
-      fields: ["id", "payment_providers.id"],
+      fields: ["id", "currency_code", "payment_providers.id"],
       filters: { id: regionId },
     })
-  ).data as { id: string; payment_providers?: { id: string }[] }[]
+  ).data as { id: string; currency_code?: string | null; payment_providers?: { id: string }[] }[]
 
   if (!region) {
     throw new AfriexAdminError("AFRIEX_REGION_NOT_FOUND", 404, `No region ${regionId}.`)
   }
 
-  return (region.payment_providers ?? []).map((provider) => provider.id)
+  return {
+    providers: (region.payment_providers ?? []).map((provider) => provider.id),
+    currency: region.currency_code?.toUpperCase() || undefined,
+  }
 }

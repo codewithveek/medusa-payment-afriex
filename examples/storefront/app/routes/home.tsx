@@ -8,9 +8,11 @@ export function meta() {
   return [{ title: "Afriex Example Store" }]
 }
 
-export async function loader() {
+export async function loader({ request }: Route.LoaderArgs) {
   const { regions } = await medusa.store.region.list()
-  const region = regions[0]
+  // `?region=reg_…` shops in another of the store's regions; the first is the default.
+  const wanted = new URL(request.url).searchParams.get("region")
+  const region = regions.find((candidate) => candidate.id === wanted) ?? regions[0]
   if (!region) {
     throw new Error("No region. Run `pnpm seed` in examples/medusa-backend.")
   }

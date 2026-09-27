@@ -1,26 +1,43 @@
 import { useState } from "react"
 import { Form, redirect, useNavigation } from "react-router"
 import type { Route } from "./+types/checkout"
-import { medusa, offeredMethods, storeApi, type AfriexMethod } from "~/lib/medusa.server"
+import {
+  medusa,
+  offeredMethods,
+  storeApi,
+  type AfriexMethod,
+  type OfferedMethod,
+} from "~/lib/medusa.server"
 import { readCartId, writeCartId } from "~/lib/cart.server"
 import { requestSession, startPayment } from "~/lib/pay.server"
+import { describeChannels, sentenceCase } from "~/lib/channels"
 import { formatAmount } from "~/lib/format"
 
 export function meta() {
   return [{ title: "Checkout — Afriex Example Store" }]
 }
 
-const METHOD_COPY: Record<AfriexMethod, { title: string; detail: string; button: string }> = {
-  bank_transfer: {
-    title: "Bank transfer",
-    detail: "Get an account number made for this order, and pay from your banking app.",
-    button: "Place order and get account details",
-  },
-  checkout: {
-    title: "Pay with Afriex",
-    detail: "Mobile money or bank transfer, on a secure Afriex page. You come straight back here.",
-    button: "Place order and pay with Afriex",
-  },
+const METHOD_COPY: Record<AfriexMethod, { title: string; button: string }> = {
+  bank_transfer: { title: "Bank transfer", button: "Place order and get account details" },
+  checkout: { title: "Pay with Afriex", button: "Place order and pay with Afriex" },
+}
+
+/** What each option means here — Afriex's page offers different things in different currencies. */
+function detailOf({ method, channels }: OfferedMethod): string {
+  if (method === "bank_transfer") {
+    return "Get an account number made for this order, and pay from your banking app."
+  }
+  const by = describeChannels(channels)
+  return `${by ? sentenceCase(by) : "Pay"} on a secure Afriex page. You come straight back here.`
+}
+
+/** A plausible address per country, so the demo form is ready to submit. */
+const PREFILL: Record<string, { city: string; postalCode: string; phone: string }> = {
+  ng: { city: "Lagos", postalCode: "101001", phone: "+2348012345678" },
+  ke: { city: "Nairobi", postalCode: "00100", phone: "+254712345678" },
+  gh: { city: "Accra", postalCode: "GA-100", phone: "+233241234567" },
+  za: { city: "Cape Town", postalCode: "8001", phone: "+27821234567" },
+  us: { city: "New York", postalCode: "10001", phone: "+12125550123" },
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -45,8 +62,16 @@ export async function loader({ request }: Route.LoaderArgs) {
   const delivery = deliveryOnCart > 0 ? deliveryOnCart : shipping_options[0]?.amount ?? 0
   const totalToPay = deliveryOnCart > 0 ? cart.total ?? 0 : (cart.total ?? 0) + delivery
 
+  // The demo prefills an address in the region's country, so the form can be
+  // submitted as it is; a real storefront asks the shopper.
+  const country = cart.region_id
+    ? (await medusa.store.region.retrieve(cart.region_id)).region.countries?.[0]?.iso_2
+    : undefined
+  const prefill = PREFILL[country ?? ""] ?? { city: "", postalCode: "", phone: "" }
+
   return {
     methods: cart.region_id ? await offeredMethods(cart.region_id) : [],
+    prefill: { country: country ?? "", ...prefill },
     delivery,
     totalToPay,
     cart: {
@@ -150,11 +175,11 @@ export async function action({ request }: Route.ActionArgs) {
 }
 
 export default function Checkout({ loaderData, actionData }: Route.ComponentProps) {
-  const { cart, methods, delivery, totalToPay } = loaderData
+  const { cart, methods, prefill, delivery, totalToPay } = loaderData
   const navigation = useNavigation()
   const busy = navigation.state !== "idle"
   const [selected, setSelected] = useState<AfriexMethod | undefined>(
-    actionData?.method ?? methods[0]
+    actionData?.method ?? methods[0]?.method
   )
 
   return (
@@ -212,24 +237,24 @@ export default function Checkout({ loaderData, actionData }: Route.ComponentProp
           <div className="row">
             <div className="field">
               <label htmlFor="city">City</label>
-              <input id="city" name="city" defaultValue="Lagos" required />
+              <input id="city" name="city" defaultValue={prefill.city} required />
             </div>
             <div className="field">
               <label htmlFor="postalCode">Postal code</label>
-              <input id="postalCode" name="postalCode" defaultValue="101001" required />
+              <input id="postalCode" name="postalCode" defaultValue={prefill.postalCode} required />
             </div>
           </div>
           <div className="row">
             <div className="field">
               <label htmlFor="countryCode">Country</label>
-              <input id="countryCode" name="countryCode" defaultValue="ng" required />
+              <input id="countryCode" name="countryCode" defaultValue={prefill.country} required />
             </div>
             <div className="field">
               <label htmlFor="phone">Phone</label>
               <input
                 id="phone"
                 name="phone"
-                defaultValue="+2348012345678"
+                defaultValue={prefill.phone}
                 required
                 aria-invalid={actionData?.field === "phone" || undefined}
               />
@@ -239,38 +264,40 @@ export default function Checkout({ loaderData, actionData }: Route.ComponentProp
           <h2 className="section-title">How would you like to pay?</h2>
           {methods.length ? (
             <div className="methods" role="radiogroup" aria-label="Payment method">
-              {methods.map((method) => (
-                <label className="method" key={method}>
+              {methods.map((offer) => (
+                <label className="method" key={offer.method}>
                   <input
                     type="radio"
                     name="method"
-                    value={method}
-                    checked={method === selected}
-                    onChange={() => setSelected(method)}
+                    value={offer.method}
+                    checked={offer.method === selected}
+                    onChange={() => setSelected(offer.method)}
                   />
                   <span>
-                    <strong>{METHOD_COPY[method].title}</strong>
-                    <span className="muted">{METHOD_COPY[method].detail}</span>
+                    <strong>{METHOD_COPY[offer.method].title}</strong>
+                    <span className="muted">{detailOf(offer)}</span>
                   </span>
                 </label>
               ))}
             </div>
           ) : (
             <p className="error">
-              No Afriex payment method is turned on for this region. Turn one on in the admin,
-              on the region's page.
+              No Afriex payment method is available in this region. Turn one on in the admin, on
+              the region's page — it says there if Afriex cannot collect this currency yet.
             </p>
           )}
 
           {actionData?.error ? <p className="error">{actionData.error}</p> : null}
 
-          <button className="wide" disabled={busy || !methods.length}>
-            {busy
-              ? selected === "checkout"
-                ? "Placing your order…"
-                : "Getting your account details…"
-              : METHOD_COPY[selected ?? "bank_transfer"].button}
-          </button>
+          {methods.length ? (
+            <button className="wide" disabled={busy}>
+              {busy
+                ? selected === "checkout"
+                  ? "Placing your order…"
+                  : "Getting your account details…"
+                : METHOD_COPY[selected ?? "bank_transfer"].button}
+            </button>
+          ) : null}
         </Form>
       </section>
     </>

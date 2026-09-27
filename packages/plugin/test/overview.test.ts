@@ -155,9 +155,18 @@ describe("the Afriex overview", () => {
     const overview = await getAfriexOverview(container)
 
     expect(overview.regions).toEqual([
-      { id: "reg_ng", name: "Nigeria", currency_code: "ngn", methods: [BANK, CHECKOUT] },
-      { id: "reg_gh", name: "Ghana", currency_code: "ghs", methods: [CHECKOUT] },
+      expect.objectContaining({ id: "reg_ng", name: "Nigeria", currency_code: "ngn", methods: [BANK, CHECKOUT] }),
+      expect.objectContaining({ id: "reg_gh", name: "Ghana", currency_code: "ghs", methods: [CHECKOUT] }),
     ])
+    // Nigeria collects both ways; Ghana, per Afriex's coverage, neither yet.
+    expect(overview.regions[0]!.availability).toEqual({
+      [BANK]: { available: true, reason: null },
+      [CHECKOUT]: { available: true, reason: null },
+    })
+    expect(overview.regions[1]!.availability[CHECKOUT]).toMatchObject({
+      available: false,
+      reason: expect.stringMatching(/GHS.*coming soon/),
+    })
     expect(overview.methods).toEqual([
       expect.objectContaining({
         method: "bank_transfer",
@@ -257,6 +266,46 @@ describe("the Afriex overview", () => {
     expect(byId["checkout:return_url"]?.message).toMatch(/shop\.example\.com/)
     expect(byId["webhook:seen"]).toMatchObject({ level: "warn" })
     expect(byId["locking"]).toMatchObject({ level: "advice" })
+  })
+
+  it("warns where a method is on but Afriex cannot collect the currency", async () => {
+    // The default store has Afriex Checkout on in Ghana.
+    const checks = (await getAfriexOverview(setup().container)).setup
+
+    const warning = checks.find((check) => check.id === "checkout:cannot_collect:reg_gh")
+    expect(warning).toMatchObject({ level: "warn" })
+    expect(warning?.message).toMatch(/Afriex Checkout is on in Ghana \(GHS\), but Afriex cannot collect GHS yet/)
+    expect(checks.find((check) => check.id === "bank_transfer:cannot_collect:reg_ng")).toBeUndefined()
+    expect(checks.find((check) => check.id === "bank_transfer:approval")).toMatchObject({ level: "advice" })
+  })
+
+  it("trusts the store's own currency list over Afriex's page", async () => {
+    const { container } = setup({
+      config: {
+        modules: [
+          {
+            options: {
+              providers: [
+                {
+                  resolve: "medusa-payment-afriex/providers/afriex-payment",
+                  options: {
+                    checkout: {
+                      returnUrl: "https://shop.example.com/back/{order_id}",
+                      currencyChannels: { GHS: ["MOBILE_MONEY"] },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    })
+
+    const overview = await getAfriexOverview(container)
+
+    expect(overview.regions[1]!.availability[CHECKOUT]).toEqual({ available: true, reason: null })
+    expect(overview.setup.find((check) => check.id === "checkout:cannot_collect:reg_gh")).toBeUndefined()
   })
 
   it("says so when checkout has no return URL, and when it cannot tell", async () => {

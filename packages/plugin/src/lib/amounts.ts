@@ -17,30 +17,27 @@ export function toAmountNumber(amount: BigNumberInput): number {
 
 /**
  * ISO 4217 currencies whose minor unit is not a hundredth. Afriex's checkout
- * docs only say "smallest unit of the currency" and "Minimum value is 100 (one
- * major unit)", which reads as two decimals everywhere; for these currencies
- * that is a 100× guess either way. They are refused unless the store states
- * the exponent Afriex uses in `checkout.minorUnitExponents`.
+ * takes amounts "in the smallest unit of the currency"; for these that unit is
+ * the whole franc or shilling (no coins below it exist), or a thousandth.
+ * `checkout.minorUnitExponents` overrides this should Afriex count differently.
  */
-const NON_TWO_DECIMAL_CURRENCIES = new Set([
-  // zero decimals
-  "BIF", "CLP", "DJF", "GNF", "ISK", "JPY", "KMF", "KRW", "PYG", "RWF", "UGX",
-  "UYI", "VND", "VUV", "XAF", "XOF", "XPF",
-  // three decimals
-  "BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND",
+const ZERO_DECIMAL_CURRENCIES = new Set([
+  "BIF", "CLP", "DJF", "GNF", "ISK", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF",
+  "UGX", "UYI", "VND", "VUV", "XAF", "XOF", "XPF",
 ])
+const THREE_DECIMAL_CURRENCIES = new Set(["BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"])
 
-/** The number of decimals Afriex's minor units use for a currency, or undefined when unknown. */
+/** The number of decimals a currency's minor unit has: the store's override, else ISO 4217. */
 export function minorUnitExponent(
   currency: string,
   configured: Record<string, number> | undefined
-): number | undefined {
+): number {
   const code = currency.toUpperCase()
   const explicit = configured?.[code]
   if (typeof explicit === "number") {
     return explicit
   }
-  return NON_TWO_DECIMAL_CURRENCIES.has(code) ? undefined : 2
+  return ZERO_DECIMAL_CURRENCIES.has(code) ? 0 : THREE_DECIMAL_CURRENCIES.has(code) ? 3 : 2
 }
 
 /**

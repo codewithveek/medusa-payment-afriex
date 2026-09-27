@@ -43,7 +43,14 @@ type Method = {
   waiting_without_link: number
 }
 
-type Region = { id: string; name: string; currency_code: string; methods: string[] }
+type Region = {
+  id: string
+  name: string
+  currency_code: string
+  methods: string[]
+  /** Per provider id: whether Afriex can collect this region's currency that way. */
+  availability: Record<string, { available: boolean; reason: string | null }>
+}
 
 type SetupCheck = { id: string; level: "ok" | "warn" | "advice"; message: string }
 
@@ -348,15 +355,27 @@ const AfriexSettingsPage = () => {
                   {region.name}{" "}
                   <span className="text-ui-fg-muted">{region.currency_code.toUpperCase()}</span>
                 </Table.Cell>
-                {methods.map((method) => (
-                  <Table.Cell key={method.provider_id}>
-                    <Switch
-                      checked={region.methods.includes(method.provider_id)}
-                      disabled={busy !== null}
-                      onCheckedChange={(checked) => void toggleRegion(region, method, checked)}
-                    />
-                  </Table.Cell>
-                ))}
+                {methods.map((method) => {
+                  const availability = region.availability?.[method.provider_id]
+                  return (
+                    <Table.Cell key={method.provider_id}>
+                      <div className="flex items-center gap-x-2">
+                        <Switch
+                          checked={region.methods.includes(method.provider_id)}
+                          disabled={busy !== null}
+                          onCheckedChange={(checked) => void toggleRegion(region, method, checked)}
+                        />
+                        {availability && !availability.available ? (
+                          <span title={availability.reason ?? undefined}>
+                            <Badge size="2xsmall" color="grey">
+                              Can't collect {region.currency_code.toUpperCase()}
+                            </Badge>
+                          </span>
+                        ) : null}
+                      </div>
+                    </Table.Cell>
+                  )
+                })}
               </Table.Row>
             ))}
           </Table.Body>

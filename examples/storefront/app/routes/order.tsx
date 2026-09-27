@@ -3,6 +3,7 @@ import { Form, redirect, useNavigation, useRevalidator } from "react-router"
 import type { Route } from "./+types/order"
 import { afriexMethodOf, medusa, offeredMethods, type AfriexMethod } from "~/lib/medusa.server"
 import { startPayment } from "~/lib/pay.server"
+import { describeChannels, type AfriexChannel } from "~/lib/channels"
 import { formatAmount } from "~/lib/format"
 
 /**
@@ -28,6 +29,8 @@ type AfriexSessionData = {
   needsAttention?: string | null
   failureReason?: { message?: string; code?: string } | null
   transactions?: { status: string; otpRequired?: boolean }[]
+  /** What the payment page will offer in this currency, decided when the method was chosen. */
+  channelsRequested?: AfriexChannel[]
 }
 
 /**
@@ -107,7 +110,11 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     collections.find((c) => ["not_paid", "awaiting"].includes(c.status ?? "")) ?? collections[0]
   const session = collection?.payment_sessions?.find((s) => afriexMethodOf(s.provider_id))
   const method = afriexMethodOf(session?.provider_id)
+  const data = (session?.data ?? {}) as AfriexSessionData
   const url = new URL(request.url)
+
+  // Offered where the order was placed: what "pay another way" can switch to.
+  const offered = order.region_id ? await offeredMethods(order.region_id) : []
 
   return {
     orderId: order.id,
@@ -115,14 +122,12 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     total: order.total ?? 0,
     currencyCode: order.currency_code,
     method,
-    state: stateOf(
-      order.status,
-      collection?.status,
-      method,
-      (session?.data ?? {}) as AfriexSessionData
+    state: stateOf(order.status, collection?.status, method, data),
+    // How the Afriex page takes this currency: bank transfer, mobile money, or both.
+    payingBy: describeChannels(
+      data.channelsRequested ?? offered.find((entry) => entry.method === "checkout")?.channels
     ),
-    // Offered where the order was placed: what "pay another way" can switch to.
-    offered: order.region_id ? await offeredMethods(order.region_id) : [],
+    canSwitchToBank: offered.some((entry) => entry.method === "bank_transfer"),
     problem: url.searchParams.get("problem"),
     returned: url.searchParams.has("returned"),
   }
@@ -147,7 +152,8 @@ export async function action({ params, request }: Route.ActionArgs) {
 }
 
 export default function Order({ loaderData, actionData }: Route.ComponentProps) {
-  const { displayId, total, currencyCode, state, offered, problem, returned } = loaderData
+  const { displayId, total, currencyCode, state, payingBy, canSwitchToBank, problem, returned } =
+    loaderData
   const revalidator = useRevalidator()
   const navigation = useNavigation()
   const busy = navigation.state !== "idle"
@@ -166,7 +172,6 @@ export default function Order({ loaderData, actionData }: Route.ComponentProps) 
 
   const amount = formatAmount(total, currencyCode)
   const error = actionData?.error ?? problem
-  const canSwitchToBank = offered.includes("bank_transfer")
 
   const PayButton = ({ label }: { label: string }) => (
     <Form method="post">
@@ -263,8 +268,8 @@ export default function Order({ loaderData, actionData }: Route.ComponentProps) 
         <section className="card">
           <h1>Finish paying for order #{displayId}</h1>
           <p className="muted">
-            Your order is placed. Pay {amount} on a secure Afriex page, by mobile money or bank
-            transfer.
+            Your order is placed. Pay {amount} on a secure Afriex page
+            {payingBy ? `, by ${payingBy}` : ""}.
           </p>
           {error ? <p className="error">{error}</p> : null}
           <div className="stack">

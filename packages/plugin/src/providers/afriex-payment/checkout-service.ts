@@ -36,7 +36,9 @@ import {
   AFRIEX_REFERENCE_CREATED,
   AFRIEX_REFERENCE_SUPERSEDED,
 } from "../../lib/constants"
+import { liveCheckoutChannels } from "../../lib/coverage"
 import { mapAfriexStatus } from "../../lib/map-status"
+import { checkoutAvailability } from "../../lib/method-availability"
 import { buildRedirectUrl } from "../../lib/return-url"
 import type {
   AfriexCheckoutChannel,
@@ -114,13 +116,6 @@ class AfriexCheckoutService extends AfriexProviderBase {
     }
 
     const exponent = minorUnitExponent(currency, settings.minorUnitExponents)
-    if (exponent === undefined) {
-      throw checkoutRefusal(
-        CheckoutErrorCode.UNAVAILABLE_FOR_CURRENCY,
-        `Afriex Checkout is not available for payments in ${currency}. Please choose another payment method.`
-      )
-    }
-
     const amounts = toAfriexMinorUnits(input.amount, exponent)
     if (amounts.minor < 100) {
       throw checkoutRefusal(
@@ -129,25 +124,39 @@ class AfriexCheckoutService extends AfriexProviderBase {
       )
     }
 
-    const currencyChannels = settings.currencyChannels?.[currency]
-    const channels = effectiveChannels({
-      configured: settings.channels,
-      adminChoice: request.channels,
-      currencyChannels,
-      hideBankChannel: request.hide_bank === true,
+    // What this currency can collect on: the store's word, else Afriex's
+    // published coverage. Refused here, on the cart, so an order is never
+    // placed for a payment page that cannot take its currency.
+    const availability = checkoutAvailability(currency, {
+      options: this.options_,
+      settings: {
+        checkoutChannels: request.channels ?? null,
+        hideBankChannelWhereBankTransfer: request.hide_bank === true,
+        pausedRegions: null,
+      },
+      bankTransferHere: request.hide_bank === true,
     })
+    if (!availability.available) {
+      this.logger_.warn(
+        `Afriex Checkout refused ${currency} for session ${sessionId}: ${availability.reason}${
+          availability.why === "coming_soon"
+            ? ` Once Afriex confirms ${currency} for your store, add it to checkout.currencyChannels in medusa-config.ts.`
+            : ""
+        }`
+      )
+      throw checkoutRefusal(
+        CheckoutErrorCode.UNAVAILABLE_FOR_CURRENCY,
+        `Afriex Checkout isn't available for ${currency} payments. Please choose another payment method.`
+      )
+    }
+    const channels = availability.channels
+
     // What to fall back to if Afriex will not collect without the bank option.
     const withBankChannel = effectiveChannels({
       configured: settings.channels,
       adminChoice: request.channels,
-      currencyChannels,
+      currencyChannels: settings.currencyChannels?.[currency] ?? liveCheckoutChannels(currency),
     })
-    if (!channels.length) {
-      throw checkoutRefusal(
-        CheckoutErrorCode.UNAVAILABLE_FOR_CURRENCY,
-        `Afriex Checkout has no payment option for ${currency}. Please choose another payment method.`
-      )
-    }
 
     const redirect = buildRedirectUrl({
       returnUrl: settings.returnUrl,
@@ -337,10 +346,9 @@ class AfriexCheckoutService extends AfriexProviderBase {
     sessionId: string,
     input: InitiatePaymentInput,
     currency: string,
-    options: { exponent: number | undefined; channels: AfriexCheckoutChannel[]; orderId: string | null }
+    options: { exponent: number; channels: AfriexCheckoutChannel[]; orderId: string | null }
   ): InitiatePaymentOutput {
-    const amounts =
-      options.exponent === undefined ? undefined : toAfriexMinorUnits(input.amount, options.exponent)
+    const amounts = toAfriexMinorUnits(input.amount, options.exponent)
 
     const data: AfriexCheckoutSessionData & Record<string, unknown> = {
       method: "checkout",
@@ -362,9 +370,9 @@ class AfriexCheckoutService extends AfriexProviderBase {
       failureReason: null,
       transactions: [],
       needsAttention: null,
-      expectedAmountMinor: amounts ? String(amounts.minor) : null,
-      minorUnitExponent: options.exponent ?? null,
-      chargedAmount: amounts?.charged ?? null,
+      expectedAmountMinor: String(amounts.minor),
+      minorUnitExponent: options.exponent,
+      chargedAmount: amounts.charged,
       merchantReference: null,
       checkoutUrl: null,
       redirectUrl: null,

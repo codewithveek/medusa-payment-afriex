@@ -1,4 +1,5 @@
 import Medusa from "@medusajs/js-sdk"
+import type { AfriexChannel } from "~/lib/channels"
 
 /**
  * Server-only Medusa client. Every call in this app runs inside a loader or an
@@ -24,16 +25,32 @@ export function afriexMethodOf(providerId: string | undefined | null): AfriexMet
   return undefined
 }
 
-/** The Afriex methods the store offers in a region — what the picker shows. */
-export async function offeredMethods(regionId: string): Promise<AfriexMethod[]> {
-  const { payment_providers } = await medusa.store.payment.listPaymentProviders({
-    region_id: regionId,
-  })
-  const methods = payment_providers
-    .map((provider) => afriexMethodOf(provider.id))
-    .filter((method): method is AfriexMethod => !!method)
-  // Bank transfer first, as the admin lists them.
-  return [...new Set(methods)].sort((a) => (a === "bank_transfer" ? -1 : 1))
+export type OfferedMethod = {
+  method: AfriexMethod
+  /** Checkout: what Afriex's page offers in this currency. Bank transfer: its one rail. */
+  channels: AfriexChannel[]
+}
+
+/**
+ * The Afriex methods to offer in a region — what the picker shows. The plugin
+ * says which are turned on there *and* can collect the region's currency; a
+ * method Afriex cannot collect in, say, ZAR is left out rather than refused
+ * after the shopper picks it.
+ */
+export async function offeredMethods(regionId: string): Promise<OfferedMethod[]> {
+  const response = await storeApi<{
+    methods: { method: AfriexMethod; enabled: boolean; available: boolean; channels: AfriexChannel[] }[]
+  }>(`/store/afriex/methods?region_id=${encodeURIComponent(regionId)}`)
+
+  if (!response.ok) {
+    throw new Error(response.body.message ?? "Afriex payment methods could not be loaded.")
+  }
+
+  return response.data.methods
+    .filter((entry) => entry.enabled && entry.available)
+    .map(({ method, channels }) => ({ method, channels }))
+    // Bank transfer first, as the admin lists them.
+    .sort((a, b) => (a.method === b.method ? 0 : a.method === "bank_transfer" ? -1 : 1))
 }
 
 export const providerIdOf = (method: AfriexMethod) =>

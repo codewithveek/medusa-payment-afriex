@@ -20,12 +20,14 @@ import type {
 import type { PaymentMethod } from "@afriex/sdk"
 import { amountsEqual, toAmountNumber, toAmountString } from "../../lib/amounts"
 import { buildPaymentInstructions } from "../../lib/build-instructions"
+import { BankTransferErrorCode, checkoutRefusal as refusal } from "../../lib/checkout-errors"
 import {
   AFRIEX_PROVIDER_IDENTIFIER,
   AFRIEX_REFERENCE_CREATED,
   AFRIEX_REFERENCE_SUPERSEDED,
 } from "../../lib/constants"
 import { isFinalRecordedStatus, mapAfriexStatus } from "../../lib/map-status"
+import { bankTransferAvailability } from "../../lib/method-availability"
 import type {
   AfriexBankTransferSessionData,
   AfriexCollectionAccount,
@@ -68,6 +70,23 @@ class AfriexBankTransferService extends AfriexProviderBase {
     const currency = input.currency_code.toUpperCase()
     const countryCode = this.resolveCountryCode(input)
 
+    // Refused before Afriex is asked, so the shopper learns at once — and, on
+    // a cart, before any order exists.
+    const availability = bankTransferAvailability(currency, this.options_)
+    if (!availability.available) {
+      this.logger_.warn(
+        `Afriex bank transfer refused ${currency} for session ${sessionId}: ${availability.reason}${
+          availability.why === "coming_soon"
+            ? ` Once Afriex confirms ${currency} for your store, list it in bankTransfer.currencies in medusa-config.ts.`
+            : ""
+        }`
+      )
+      throw refusal(
+        BankTransferErrorCode.UNAVAILABLE_FOR_CURRENCY,
+        `Bank transfer isn't available for ${currency} payments. Please choose another payment method.`
+      )
+    }
+
     try {
       const account = await this.createDedicatedAccount(input, {
         sessionId,
@@ -106,21 +125,52 @@ class AfriexBankTransferService extends AfriexProviderBase {
         data: data as unknown as Record<string, unknown>,
       }
     } catch (error) {
-      // Fail loudly. A session that looks valid but can never be paid is worse
-      // than a checkout that visibly refuses to proceed. The upstream detail
-      // goes to the log, not to the shopper: Afriex error text describes the
-      // merchant's account, not anything the customer can act on.
-      this.logger_.error(
-        `Afriex payment initiation failed for session ${sessionId}: ${
-          (error as Error).message
-        }`
-      )
+      throw this.toShopperError(error, sessionId, currency)
+    }
+  }
 
-      throw new MedusaError(
-        MedusaError.Types.UNEXPECTED_STATE,
-        "Afriex payment initiation failed. Please try again or choose another payment method."
+  /**
+   * Turns an Afriex failure into what the shopper should see. Two answers are
+   * refusals with a code a storefront can act on: the store is not yet
+   * approved to collect this currency, and the currency cannot be collected
+   * this way. Everything else fails loudly — a session that looks valid but
+   * can never be paid is worse than a checkout that visibly refuses — with the
+   * upstream detail in the log, not in front of the shopper: Afriex's error
+   * text describes the merchant's account, not anything a customer can act on.
+   */
+  private toShopperError(error: unknown, sessionId: string, currency: string): MedusaError {
+    const failure = error as { message?: string; errorCode?: string; statusCode?: number }
+
+    if (failure?.errorCode === "VIRTUAL_ACCOUNT_PENDING_COMPLIANCE_REVIEW") {
+      this.logger_.error(
+        `Afriex has not approved ${currency} virtual accounts for this store yet (VIRTUAL_ACCOUNT_PENDING_COMPLIANCE_REVIEW), so bank transfer in ${currency} was refused for session ${sessionId}. Afriex reviews the first request in each currency; ask Afriex support how it is going. Until then, turn bank transfer off in your ${currency} regions.`
+      )
+      return refusal(
+        BankTransferErrorCode.AWAITING_APPROVAL,
+        `Bank transfer isn't available for ${currency} payments yet. Please choose another payment method.`
       )
     }
+
+    if (failure?.errorCode === "UNSUPPORTED_VIRTUAL_ACCOUNT_CURRENCY") {
+      this.logger_.error(
+        `Afriex does not open virtual accounts in ${currency} (UNSUPPORTED_VIRTUAL_ACCOUNT_CURRENCY), so bank transfer was refused for session ${sessionId}. Turn bank transfer off in your ${currency} regions, or remove ${currency} from bankTransfer.currencies.`
+      )
+      return refusal(
+        BankTransferErrorCode.UNAVAILABLE_FOR_CURRENCY,
+        `Bank transfer isn't available for ${currency} payments. Please choose another payment method.`
+      )
+    }
+
+    this.logger_.error(
+      `Afriex payment initiation failed for session ${sessionId}: ${
+        failure?.statusCode ? `HTTP ${failure.statusCode} ` : ""
+      }${failure?.errorCode ? `${failure.errorCode} ` : ""}${failure?.message ?? String(error)}`
+    )
+
+    return new MedusaError(
+      MedusaError.Types.UNEXPECTED_STATE,
+      "Afriex payment initiation failed. Please try again or choose another payment method."
+    )
   }
 
   /**
@@ -237,13 +287,18 @@ class AfriexBankTransferService extends AfriexProviderBase {
     // A dynamic virtual account is scoped to an exact amount, so a changed cart
     // total needs a new account. The old one is closed so a late transfer into
     // it cannot land as an orphaned deposit.
-    const account = await this.createDedicatedAccount(input, {
-      sessionId: data.reference,
-      currency,
-      countryCode: this.resolveCountryCode(input),
-      amount: toAmountNumber(input.amount),
-      sessionCustomerId: data.afriexCustomerId ?? undefined,
-    })
+    let account: AfriexCollectionAccount
+    try {
+      account = await this.createDedicatedAccount(input, {
+        sessionId: data.reference,
+        currency,
+        countryCode: this.resolveCountryCode(input),
+        amount: toAmountNumber(input.amount),
+        sessionCustomerId: data.afriexCustomerId ?? undefined,
+      })
+    } catch (error) {
+      throw this.toShopperError(error, data.reference, currency)
+    }
 
     await this.closeDedicatedAccount(data)
 
@@ -283,11 +338,13 @@ class AfriexBankTransferService extends AfriexProviderBase {
       return { id: existing, data: { customerId: existing } }
     }
 
+    // No order here to take a currency from, so only the address or the
+    // store's default can say which country the shopper is in.
     const customerId = await this.registerAfriexCustomer(
       input.context.customer,
-      input.context.customer.billing_address?.country_code?.toUpperCase() ??
-        this.options_.defaultCountryCode ??
-        "NG"
+      input.context.customer.billing_address?.country_code?.toUpperCase() ||
+        this.options_.defaultCountryCode?.toUpperCase() ||
+        undefined
     )
 
     if (!customerId) {
@@ -324,7 +381,7 @@ class AfriexBankTransferService extends AfriexProviderBase {
     params: {
       sessionId: string
       currency: string
-      countryCode: string
+      countryCode: string | undefined
       amount: number
       /** The customer this session's previous account was minted for. Only an update knows it. */
       sessionCustomerId?: string
@@ -346,7 +403,7 @@ class AfriexBankTransferService extends AfriexProviderBase {
     const paymentMethod = await this.afriex_.paymentMethods.createVirtualAccount({
       currency: params.currency,
       ...(customerId ? { customerId } : {}),
-      country: params.countryCode,
+      ...(params.countryCode ? { country: params.countryCode } : {}),
       amount: params.amount,
       reference: params.sessionId,
     })
@@ -409,7 +466,7 @@ class AfriexBankTransferService extends AfriexProviderBase {
    */
   private async resolveAfriexCustomerId(
     input: InitiatePaymentInput | UpdatePaymentInput,
-    countryCode: string,
+    countryCode: string | undefined,
     sessionCustomerId: string | undefined
   ): Promise<string | undefined> {
     const fromAccountHolder = input.context?.account_holder?.data?.customerId
@@ -431,14 +488,15 @@ class AfriexBankTransferService extends AfriexProviderBase {
     customer:
       | NonNullable<InitiatePaymentInput["context"]>["customer"]
       | undefined,
-    countryCode: string
+    countryCode: string | undefined
   ): Promise<string | undefined> {
     const email = customer?.email?.trim()
     const phone = customer?.phone?.trim()
 
-    // Afriex rejects a customer without both. Rather than send empty strings
-    // and fail the checkout, let the account be business-owned.
-    if (!email || !phone) {
+    // Afriex rejects a customer without all three. Rather than send empty
+    // strings, or a country guessed at, and fail the checkout, let the account
+    // be business-owned.
+    if (!email || !phone || !countryCode) {
       return undefined
     }
 

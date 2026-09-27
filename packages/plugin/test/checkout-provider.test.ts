@@ -153,18 +153,44 @@ describe("the checkout provider", () => {
       expect(error).toMatchObject({ type: "not_allowed", code: "AFRIEX_CHECKOUT_NOT_CONFIGURED" })
     })
 
-    it("refuses a currency whose minor unit is not known, unless configured", async () => {
-      const service = buildService()
+    it("counts a currency with no smaller coin in whole units, without being told", async () => {
+      // XOF: mobile money is live in Benin and Côte d'Ivoire, and a franc has no cents.
       const xof = { ...input(), currency_code: "xof" }
 
-      expect(await refusal(service.initiatePayment(xof))).toMatchObject({
-        code: "AFRIEX_CHECKOUT_UNAVAILABLE_FOR_CURRENCY",
-      })
-
-      const configured = buildService({ checkout: { ...OPTIONS.checkout, minorUnitExponents: { XOF: 0 } } })
-      await expect(configured.initiatePayment(xof)).resolves.toMatchObject({
+      await expect(buildService().initiatePayment(xof)).resolves.toMatchObject({
         data: expect.objectContaining({ expectedAmountMinor: "25000", minorUnitExponent: 0 }),
       })
+
+      // The store's word wins, should Afriex count differently.
+      const configured = buildService({ checkout: { ...OPTIONS.checkout, minorUnitExponents: { XOF: 2 } } })
+      await expect(configured.initiatePayment(xof)).resolves.toMatchObject({
+        data: expect.objectContaining({ expectedAmountMinor: "2500000", minorUnitExponent: 2 }),
+      })
+    })
+
+    it("refuses a currency Afriex's page cannot collect yet, until the store says otherwise", async () => {
+      const ghs = { ...input(), currency_code: "ghs" }
+
+      const error = await refusal(buildService().initiatePayment(ghs))
+      expect(error).toMatchObject({ type: "not_allowed", code: "AFRIEX_CHECKOUT_UNAVAILABLE_FOR_CURRENCY" })
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringMatching(/GHS.*coming soon.*checkout\.currencyChannels/)
+      )
+
+      const confirmed = buildService({
+        checkout: { ...OPTIONS.checkout, currencyChannels: { GHS: ["MOBILE_MONEY"] } },
+      })
+      await expect(confirmed.initiatePayment(ghs)).resolves.toMatchObject({
+        data: expect.objectContaining({ channelsRequested: ["MOBILE_MONEY"] }),
+      })
+    })
+
+    it("refuses a currency Afriex does not collect at all", async () => {
+      for (const currency_code of ["zar", "jpy"]) {
+        const error = await refusal(buildService().initiatePayment({ ...input(), currency_code }))
+        expect(error.code).toBe("AFRIEX_CHECKOUT_UNAVAILABLE_FOR_CURRENCY")
+      }
+      expect(sdk.checkout.createSession).not.toHaveBeenCalled()
     })
 
     it("refuses an amount below Afriex's minimum", async () => {
@@ -210,7 +236,8 @@ describe("the checkout provider", () => {
         merchantReference: SESSION_ID,
         redirectUrl: "https://shop.example.com/checkout/afriex/return/order_01",
         customer: CUSTOMER,
-        channels: ["VIRTUAL_BANK_ACCOUNT", "MOBILE_MONEY"],
+        // NGN collects by virtual account alone, per Afriex's coverage.
+        channels: ["VIRTUAL_BANK_ACCOUNT"],
         metadata: {
           medusa_payment_session_id: SESSION_ID,
           medusa_payment_collection_id: "paycol_01",
@@ -302,10 +329,38 @@ describe("the checkout provider", () => {
     })
 
     it("sends only the admin's channels when they chose, within the cap", async () => {
-      await buildService().initiatePayment(input({ ...PAY, channels: ["MOBILE_MONEY", "CARD"] }))
+      // KES collects by bank transfer and mobile money; the admin kept mobile money.
+      await buildService().initiatePayment({
+        ...input({ ...PAY, channels: ["MOBILE_MONEY", "CARD"] }),
+        currency_code: "kes",
+      })
 
       expect(sdk.checkout.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ currency: "KES", channels: ["MOBILE_MONEY"] })
+      )
+    })
+
+    it("refuses when the admin's choice leaves nothing Afriex collects in the currency", async () => {
+      // NGN collects by bank transfer alone.
+      const error = await refusal(
+        buildService().initiatePayment(input({ ...PAY, channels: ["MOBILE_MONEY"] }))
+      )
+
+      expect(error.code).toBe("AFRIEX_CHECKOUT_UNAVAILABLE_FOR_CURRENCY")
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/Nothing is left to offer in NGN/))
+      expect(sdk.checkout.createSession).not.toHaveBeenCalled()
+    })
+
+    it("knows from Afriex's coverage which currencies have another way, without being told", async () => {
+      // KES can drop the bank option; NGN cannot, having nothing else.
+      await buildService().initiatePayment({ ...input({ ...PAY, hide_bank: true }), currency_code: "kes" })
+      expect(sdk.checkout.createSession).toHaveBeenLastCalledWith(
         expect.objectContaining({ channels: ["MOBILE_MONEY"] })
+      )
+
+      await buildService().initiatePayment(input({ ...PAY, hide_bank: true }))
+      expect(sdk.checkout.createSession).toHaveBeenLastCalledWith(
+        expect.objectContaining({ channels: ["VIRTUAL_BANK_ACCOUNT"] })
       )
     })
 

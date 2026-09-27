@@ -29,6 +29,7 @@ import {
   type AfriexMethod,
 } from "../../lib/constants"
 import { isCheckoutChannel } from "../../lib/checkout-channels"
+import { currencyCoverage } from "../../lib/coverage"
 import { mapAfriexStatus } from "../../lib/map-status"
 import { returnUrlProblem } from "../../lib/return-url"
 import type { AfriexProviderOptions, AfriexSessionBase } from "../../lib/types"
@@ -142,6 +143,30 @@ function validateCheckoutOptions(checkout: unknown): void {
   }
 }
 
+function validateBankTransferOptions(bankTransfer: unknown): void {
+  if (bankTransfer === undefined || bankTransfer === null) {
+    return
+  }
+  if (typeof bankTransfer !== "object" || Array.isArray(bankTransfer)) {
+    throw new MedusaError(
+      MedusaError.Types.INVALID_ARGUMENT,
+      "Afriex payment provider: `bankTransfer` must be an object."
+    )
+  }
+
+  const currencies = (bankTransfer as Record<string, unknown>).currencies
+  if (
+    currencies !== undefined &&
+    (!Array.isArray(currencies) ||
+      !currencies.every((currency) => typeof currency === "string" && /^[A-Za-z]{3}$/.test(currency)))
+  ) {
+    throw new MedusaError(
+      MedusaError.Types.INVALID_ARGUMENT,
+      'Afriex payment provider: `bankTransfer.currencies` must be a list of 3-letter currency codes, like ["GHS"].'
+    )
+  }
+}
+
 /**
  * What every Afriex payment method shares: the options and the SDK built from
  * them, webhook verification, and the parts of the payment lifecycle that do
@@ -188,6 +213,17 @@ export abstract class AfriexProviderBase extends AbstractPaymentProvider<AfriexP
       )
     }
 
+    if (
+      options.defaultCountryCode !== undefined &&
+      !/^[A-Za-z]{2}$/.test(String(options.defaultCountryCode))
+    ) {
+      throw new MedusaError(
+        MedusaError.Types.INVALID_ARGUMENT,
+        'Afriex payment provider: `defaultCountryCode` must be a 2-letter country code, like "NG".'
+      )
+    }
+
+    validateBankTransferOptions(options.bankTransfer)
     validateCheckoutOptions(options.checkout)
   }
 
@@ -346,13 +382,20 @@ export abstract class AfriexProviderBase extends AbstractPaymentProvider<AfriexP
     }
   }
 
+  /**
+   * The country a payment is for: the billing address, else the country the
+   * currency names (KES is Kenya's), else what the store set as its default.
+   * Undefined when none of those says — a guess would register the shopper
+   * in the wrong country.
+   */
   protected resolveCountryCode(
     input: InitiatePaymentInput | UpdatePaymentInput
-  ): string {
+  ): string | undefined {
     return (
-      input.context?.customer?.billing_address?.country_code?.toUpperCase() ??
-      this.options_.defaultCountryCode ??
-      "NG"
+      input.context?.customer?.billing_address?.country_code?.toUpperCase() ||
+      currencyCoverage(input.currency_code).homeCountry ||
+      this.options_.defaultCountryCode?.toUpperCase() ||
+      undefined
     )
   }
 }
