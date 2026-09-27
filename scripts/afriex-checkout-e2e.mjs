@@ -14,6 +14,15 @@
  * Step 4 calls Afriex with the store's own keys. With placeholder keys it
  * fails, and the script shows the error code the storefront would get.
  *
+ *   5. (staging) choose the outcome, and wait for Afriex's webhook to land
+ *
+ * Afriex's sandbox settles a checkout payment by itself, and lets the
+ * reference decide how: `--sandbox fail` for FAILED, `--instant` to settle in
+ * about 30 seconds instead of 5–6 minutes, `--otp yes` to ask for the sandbox
+ * one-time password. The script then watches the order until the webhook has
+ * moved it. The store must run against staging, its webhook URL must be
+ * reachable from the internet, and its webhook public key must be staging's.
+ *
  * No dependencies. Needs Node >= 20.
  */
 
@@ -27,6 +36,14 @@ Afriex Checkout end-to-end run against a Medusa store
   --country <code>         Shipping and billing country.     Default: ng
   --provider <id>          Checkout provider id.             Default: pp_afriex-checkout_afriex
   --stop-after-select      Stop once the order is placed, before asking Afriex for a link.
+
+Staging only — Afriex's sandbox settles the payment by itself:
+  --sandbox success|fail   The outcome Afriex should settle with.
+  --instant                Settle in about 30 seconds instead of 5–6 minutes.
+  --otp yes|no             Ask for the sandbox one-time password on the hosted page, or never.
+  --afriex-api-key <key>   With --otp yes: enter the sandbox OTP (123456) for the shopper,
+                           through Afriex's API, once the payment asks for it.
+  --wait <seconds>         How long to watch the order for the webhook.  Default: 420 with --sandbox
 `
 
 /** @param {string[]} argv */
@@ -173,8 +190,19 @@ if (flags["stop-after-select"]) {
   process.exit(0)
 }
 
+/** What to ask Afriex's sandbox for, when anything was asked. */
+const sandbox = (() => {
+  const request = {}
+  if (flags.sandbox === "success" || flags.sandbox === "fail") request.outcome = flags.sandbox
+  if (flags.instant === true) request.instant = true
+  if (flags.otp === "yes") request.otp = true
+  if (flags.otp === "no") request.otp = false
+  return Object.keys(request).length ? request : undefined
+})()
+
 const paid = await api("POST", `/store/payment-collections/${payment_collection.id}/payment-sessions`, {
   provider_id: PROVIDER,
+  ...(sandbox ? { data: { sandbox } } : {}),
 })
 if (paid.status >= 400) {
   console.log(`\n  ✗ ask Afriex for the payment link: HTTP ${paid.status}`)
@@ -187,7 +215,73 @@ if (paid.status >= 400) {
 const session = paid.json.payment_collection.payment_sessions.find((s) => s.provider_id === PROVIDER)
 console.log(`  ✓ payment link created`)
 console.log(`    session  ${session.id}   (the merchantReference Afriex will echo)`)
+if (session.data.sandboxReference) {
+  console.log(`    sent as  ${session.data.sandboxReference}   (sandbox control words after the id)`)
+}
 console.log(`    link     ${session.data.checkoutUrl}`)
 console.log(`    returns  ${session.data.redirectUrl}`)
-console.log(`\n  Open the link to pay. Or, with the test key from "webhook:keygen", simulate the payment:`)
-console.log(`    node scripts/afriex-webhook.mjs send --session ${session.id} --amount ${session.data.chargedAmount} --channel MOBILE_MONEY\n`)
+
+const waitSeconds = Number(flags.wait ?? (sandbox ? 420 : 0))
+if (!waitSeconds) {
+  console.log(`\n  Open the link to pay. Or, with the test key from "webhook:keygen", simulate the payment:`)
+  console.log(`    node scripts/afriex-webhook.mjs send --session ${session.id} --amount ${session.data.chargedAmount} --channel MOBILE_MONEY\n`)
+  process.exit(0)
+}
+
+// --- Watch the order until Afriex's webhook moves it.
+const orderId = completed.order.id
+const wanted = sandbox?.outcome === "fail" ? "FAILED" : "SUCCESS"
+const PAID = ["authorized", "captured", "completed"]
+console.log(`\n  Watching order #${completed.order.display_id} for up to ${waitSeconds}s, expecting ${wanted}…`)
+
+let last = ""
+let otpEntered = false
+const deadline = Date.now() + waitSeconds * 1000
+while (Date.now() < deadline) {
+  await new Promise((resolve) => setTimeout(resolve, 10000))
+  const result = await api(
+    "GET",
+    `/store/orders/${orderId}?fields=id,status,*payment_collections,*payment_collections.payment_sessions`
+  )
+  if (result.status >= 400) {
+    console.log(`    (order lookup failed: HTTP ${result.status})`)
+    continue
+  }
+  const collection = result.json.order.payment_collections?.[0]
+  const current = collection?.payment_sessions?.find((s) => s.id === session.id)
+  const status = current?.data?.currentStatus ?? "-"
+  const line = `${status} · collection ${collection?.status ?? "-"}`
+  if (line !== last) {
+    console.log(`    ${new Date().toLocaleTimeString()}  ${line}`)
+    last = line
+  }
+
+  if (status === "CUSTOMER_ACTION_REQUIRED" && !otpEntered) {
+    const apiKey = flags["afriex-api-key"]
+    const transactionId = current?.data?.afriexTransactionId
+    if (typeof apiKey === "string" && transactionId) {
+      const authorized = await fetch(`https://sandbox.api.afriex.com/api/v1/transaction/${transactionId}/authorize`, {
+        method: "POST",
+        headers: { "x-api-key": apiKey, "content-type": "application/json" },
+        body: JSON.stringify({ type: "OTP", otp: "123456" }),
+      })
+      console.log(`    entered the sandbox OTP for ${transactionId}: HTTP ${authorized.status}`)
+      otpEntered = true
+    } else if (!otpEntered) {
+      console.log(`    Afriex is waiting for the one-time password. Enter 123456 on the hosted page, or rerun with --afriex-api-key.`)
+      otpEntered = true
+    }
+  }
+
+  if (PAID.includes(collection?.status) || status === "SUCCESS") {
+    console.log(wanted === "SUCCESS" ? `\n  ✓ paid, as asked\n` : `\n  ✗ paid, but a FAILED outcome was asked for\n`)
+    process.exit(wanted === "SUCCESS" ? 0 : 1)
+  }
+  if (["FAILED", "REJECTED", "CANCELLED"].includes(status)) {
+    console.log(wanted === "FAILED" ? `\n  ✓ failed, as asked (${current?.data?.failureReason?.message ?? "no message"})\n` : `\n  ✗ failed, but SUCCESS was asked for\n`)
+    process.exit(wanted === "FAILED" ? 0 : 1)
+  }
+}
+
+console.log(`\n  ✗ No webhook moved the order within ${waitSeconds}s. Is the store's webhook URL reachable from the internet, registered in the Afriex dashboard, and is its webhook public key staging's?\n`)
+process.exit(3)

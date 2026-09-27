@@ -5,6 +5,7 @@ import type {
   TransactionWebhookPayload,
   WebhookPayload,
 } from "@afriex/sdk"
+import { stripSandboxHint } from "./sandbox"
 
 export function isTransactionEvent(
   payload: WebhookPayload
@@ -45,9 +46,12 @@ export function readCheckoutSessionEvent(
   const text = (value: unknown): string | undefined =>
     typeof value === "string" && value ? value : undefined
 
+  const merchantReference = text(data.merchantReference)
+
   return {
     sessionId: text(data.sessionId),
-    merchantReference: text(data.merchantReference),
+    // In staging the reference may carry sandbox control words after the id.
+    merchantReference: merchantReference ? stripSandboxHint(merchantReference) : undefined,
     expiresAt: text(data.expiresAt),
     paidAt: text(data.paidAt),
   }
@@ -72,9 +76,12 @@ export function buildCheckoutSessionEventId(
  * from the create request, with `meta.reference` as the older spelling.
  *
  * Without it an event cannot be tied to a cart, and the plugin refuses to guess.
+ * In staging the reference may carry sandbox control words after the id
+ * (`payses_…--SIMULATE_INSTANT_FAIL`); they are removed here.
  */
 export function getSessionId(data: TransactionWebhookData): string | undefined {
-  return data.merchantReference ?? data.meta?.reference
+  const reference = data.merchantReference ?? data.meta?.reference
+  return typeof reference === "string" ? stripSandboxHint(reference) : reference
 }
 
 /**

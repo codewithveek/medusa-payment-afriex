@@ -197,7 +197,14 @@ export type AfriexCheckoutSessionData = AfriexSessionBase & {
   minorUnitExponent: number | null
   /** The major-unit amount actually sent to Afriex, after rounding. */
   chargedAmount: string | null
+  /** The pay session's id: what every webhook for this link is matched on. */
   merchantReference: string | null
+  /**
+   * What was actually sent as Afriex's `merchantReference` when a sandbox
+   * outcome was asked for in staging: the id plus Afriex's control words.
+   * Null otherwise, and always in production.
+   */
+  sandboxReference: string | null
   checkoutUrl: string | null
   redirectUrl: string | null
   channelsRequested: AfriexCheckoutChannel[]

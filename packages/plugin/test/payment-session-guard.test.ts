@@ -272,6 +272,20 @@ describe("paying an order that already exists", () => {
 })
 
 describe("building a checkout session on the server", () => {
+  it("keeps a sandbox request for the provider to judge, and nothing else the storefront sent", async () => {
+    const { req } = await run(
+      {},
+      {
+        provider_id: CHECKOUT,
+        data: { sandbox: { outcome: "fail", instant: true }, merchantReference: "mine" },
+      }
+    )
+
+    expect(req.body.data.sandbox).toEqual({ outcome: "fail", instant: true })
+    expect(req.body.data).not.toHaveProperty("merchantReference")
+    expect(req.body.data).not.toHaveProperty("return_url")
+  })
+
   it("makes it a selection while the cart is open, with the customer from the cart", async () => {
     const { req, next } = await run(
       {},

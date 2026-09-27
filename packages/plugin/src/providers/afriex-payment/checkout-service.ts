@@ -40,6 +40,7 @@ import { liveCheckoutChannels } from "../../lib/coverage"
 import { mapAfriexStatus } from "../../lib/map-status"
 import { checkoutAvailability } from "../../lib/method-availability"
 import { buildRedirectUrl } from "../../lib/return-url"
+import { readSandboxRequest, sandboxHint, withSandboxHint } from "../../lib/sandbox"
 import type {
   AfriexCheckoutChannel,
   AfriexCheckoutRequest,
@@ -189,11 +190,23 @@ class AfriexCheckoutService extends AfriexProviderBase {
       }).filter((entry): entry is [string, string] => typeof entry[1] === "string" && !!entry[1])
     )
 
+    // A test may choose the outcome in Afriex's sandbox through the reference.
+    // Only staging listens; in production the request is dropped and said so.
+    const sandbox = readSandboxRequest(input.data?.sandbox)
+    let reference = sessionId
+    if (sandbox && this.options_.environment === "staging") {
+      reference = withSandboxHint(sessionId, sandboxHint(sandbox))
+    } else if (sandbox) {
+      this.logger_.warn(
+        `Afriex Checkout ignored a sandbox request on session ${sessionId}: the store runs against production, which does not simulate outcomes.`
+      )
+    }
+
     const ask = (offered: AfriexCheckoutChannel[]) =>
       this.afriex_.checkout.createSession({
         amount: amounts.minor,
         currency,
-        merchantReference: sessionId,
+        merchantReference: reference,
         redirectUrl: redirect.url,
         customer: request.customer!,
         channels: offered,
@@ -233,6 +246,7 @@ class AfriexCheckoutService extends AfriexProviderBase {
       ...(selected.data as unknown as AfriexCheckoutSessionData),
       stage: "open",
       merchantReference: sessionId,
+      sandboxReference: reference === sessionId ? null : reference,
       checkoutUrl: created.checkoutUrl,
       redirectUrl: redirect.url,
       // What was asked for in the end, which the retry above may have widened.
@@ -374,6 +388,7 @@ class AfriexCheckoutService extends AfriexProviderBase {
       minorUnitExponent: options.exponent,
       chargedAmount: amounts.charged,
       merchantReference: null,
+      sandboxReference: null,
       checkoutUrl: null,
       redirectUrl: null,
       channelsRequested: options.channels,
@@ -386,6 +401,7 @@ class AfriexCheckoutService extends AfriexProviderBase {
       // What the middleware and the storefront sent, cleared from storage.
       afriex: null,
       return_url: null,
+      sandbox: null,
     }
 
     return { id: sessionId, status: "pending", data }

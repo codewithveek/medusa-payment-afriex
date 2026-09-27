@@ -455,7 +455,7 @@ Afriex's page, and the order turning paid shortly after they pay.
 
 ## Testing
 
-Afriex creates virtual accounts in production only, so there are three levels of
+Afriex creates virtual accounts in production only, so there are four levels of
 testing, from free to real.
 
 **1. Can Afriex reach me, and is my key right?** Works in staging. Ask Afriex to
@@ -479,7 +479,29 @@ checkout order through your store's API: choose the method, place the order,
 ask for the link. See
 [Testing without real money](https://github.com/codewithveek/medusa-payment-afriex#testing-without-real-money).
 
-**3. One real order.** With production keys, place an order for a small amount
+**3. Afriex Checkout, end to end in staging.** Afriex's sandbox settles a
+checkout payment by itself — usually within 5–6 minutes — and lets the
+`merchantReference` choose how. The plugin exposes that: send
+`data: { sandbox: { outcome: "fail", instant: true } }` with the pay call (or
+`outcome: "success"`, and `otp: true` to have the hosted page ask for the
+sandbox one-time password, `123456`), and the plugin adds Afriex's control
+words to the reference it sends, then strips them from the webhook, so the
+order is matched as always. Only a store running against staging listens;
+production ignores it.
+
+```bash
+pnpm checkout:e2e --publishable-key pk_… --sandbox fail --instant
+pnpm checkout:e2e --publishable-key pk_… --sandbox success --instant --otp yes --afriex-api-key $AFRIEX_API_KEY
+```
+
+The script places the order, asks for the link, and watches the order until
+Afriex's webhook has moved it. For that webhook to arrive, your Medusa server's
+`/afriex/webhook` must be reachable from the internet (a tunnel will do), be
+the URL registered in the Afriex dashboard, and the store must hold staging's
+webhook public key. Bank transfer cannot be tested this way: Afriex opens
+virtual accounts in production only.
+
+**4. One real order.** With production keys, place an order for a small amount
 and pay it. Watch the order turn paid and check the admin widget. Do this once
 before you take real customers.
 

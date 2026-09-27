@@ -248,10 +248,12 @@ async function prepare(req: MedusaRequest, collectionId: string): Promise<Refusa
   }
 
   // Everything the storefront sent is dropped, except a return URL the
-  // provider checks against the store's allowed origins.
-  const returnUrl = (body.data as Record<string, unknown> | undefined)?.return_url
+  // provider checks against the store's allowed origins, and a sandbox
+  // request the provider honours in staging only.
+  const sent = (body.data ?? {}) as Record<string, unknown>
   const data: Record<string, unknown> = {
-    ...(returnUrl !== undefined ? { return_url: returnUrl } : {}),
+    ...(sent.return_url !== undefined ? { return_url: sent.return_url } : {}),
+    ...(sent.sandbox !== undefined ? { sandbox: sent.sandbox } : {}),
     afriex: instructions,
   }
 

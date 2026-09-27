@@ -256,6 +256,33 @@ describe("the checkout provider", () => {
       })
     })
 
+    it("lets a test choose the sandbox outcome through the reference, in staging only", async () => {
+      const result = await buildService().initiatePayment(
+        input(PAY, { sandbox: { outcome: "fail", instant: true } })
+      )
+
+      expect(sdk.checkout.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ merchantReference: `${SESSION_ID}--SIMULATE_INSTANT_FAIL` })
+      )
+      // Matching still runs on the session id; what was sent is kept beside it.
+      expect(result.data).toMatchObject({
+        merchantReference: SESSION_ID,
+        sandboxReference: `${SESSION_ID}--SIMULATE_INSTANT_FAIL`,
+        sandbox: null,
+      })
+
+      vi.clearAllMocks()
+      sdk.checkout.createSession.mockResolvedValue({ checkoutUrl: "https://pay.afriex.com/pay/abc" })
+      const production = buildService({ environment: "production" })
+      const real = await production.initiatePayment(input(PAY, { sandbox: { outcome: "fail" } }))
+
+      expect(sdk.checkout.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ merchantReference: SESSION_ID })
+      )
+      expect(real.data).toMatchObject({ sandboxReference: null })
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/ignored a sandbox request/))
+    })
+
     it("records the link in the ledger", async () => {
       await buildService().initiatePayment(input(PAY))
 
