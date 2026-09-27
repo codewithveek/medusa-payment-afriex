@@ -16,3 +16,6 @@ archs/
 
 # throwaway webhook signing keys from scripts/afriex-webhook.mjs
 .afriex-dev/
+
+# local-only notes and knowledge graph
+docs/
