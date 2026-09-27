@@ -1,7 +1,7 @@
 {
   "name": "medusa-payment-afriex",
   "version": "0.1.0",
-  "description": "Medusa v2 payment provider for Afriex — bank transfer into a virtual account created for each order, reconciled by webhook.",
+  "description": "Medusa v2 payment provider for Afriex — bank transfer into a virtual account created for each order, or Afriex's hosted payment page, reconciled by webhook.",
   "author": "Afriex",
   "license": "MIT",
   "repository": {

@@ -35,9 +35,13 @@ reconcile by hand.
   currency is held for review instead of being accepted.
 - **No lost money.** A second transfer to a paid order, or a deposit that matches
   no order, is recorded and logged loudly so you can refund it.
-- **An admin widget** on the order page: bank account or payment link, expected
-  and received amounts, how the shopper paid, the Afriex transaction id, and
-  anything that needs your attention.
+- **An admin page and two widgets.** Settings → Afriex shows what is on
+  where, what is still waiting for money, and what needs a person. The order
+  page shows the bank account or payment link, expected and received amounts,
+  how the shopper paid, and buttons to settle money the plugin held back. The
+  region page turns each method on or off.
+- **Only where Afriex can collect.** The plugin knows which currencies each
+  method works in, in every country Afriex serves, and says why one does not.
 - **Safe to retry.** Afriex redelivers webhooks. Each event is processed once.
 
 ## How it works
@@ -206,8 +210,10 @@ a failed payment.
 
 ### Step 5. Turn Afriex on for a region
 
-In the Medusa Admin, go to **Settings → Regions** and open the region you sell
-in. Below the region's details, the **Afriex payment methods** card has one
+In the Medusa Admin, go to **Settings → Afriex**. The page checks your setup
+(webhook URL, return URL, whether Afriex has ever reached you) and has a grid of
+switches, one per region and method. Or open a region under **Settings →
+Regions**: below its details, the **Afriex payment methods** card has one
 switch per method:
 
 | Switch          | Provider id                 |
@@ -216,7 +222,8 @@ switch per method:
 | Afriex Checkout | `pp_afriex-checkout_afriex` |
 
 Medusa's own **⋯ → Edit → Payment Providers** field changes the same setting,
-under those ids. The card also says what each method is, and before turning one
+under those ids. The card also says what each method is, whether Afriex can
+collect the region's currency that way (and why not), and before turning one
 off it tells you how many payments in the region are still waiting for money.
 
 **Turning a method off only stops new payments.** A shopper who already has the
@@ -258,7 +265,9 @@ reach you, see [Testing](#testing).
 ### Step 7. Connect your storefront
 
 This uses the [Medusa JS SDK](https://docs.medusajs.com/resources/js-sdk). Wire
-up the methods you turned on.
+up the methods you turned on. In the samples, `sdk` is your Medusa client,
+`cart` the shopper's cart, and `MEDUSA_BACKEND_URL` and `MEDUSA_PUBLISHABLE_KEY`
+your server's address and publishable key.
 
 **Which methods to show.** Ask the plugin, not Medusa's provider list: a method
 can be turned on in a region whose currency Afriex cannot collect, and the
@@ -408,28 +417,23 @@ Afriex sends the shopper back to your `returnUrl`. Show the order page from
 there, checking every few seconds as for bank transfer. Coming back does not
 mean the shopper paid. Only the webhook marks the order paid.
 
-**To narrow what shoppers are offered on Afriex's page**, without touching
-`medusa-config.ts`:
-
-```bash
-curl -X POST https://your-medusa-server.com/admin/afriex/settings \
-  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"checkout_channels": ["MOBILE_MONEY"], "hide_bank_channel_where_bank_transfer": true}'
-```
-
-`hide_bank_channel_where_bank_transfer` drops Afriex's own bank transfer in
-regions where you already offer the plugin's — but only where `currencyChannels`
-shows the currency can be paid another way, so a shopper is never left with
-nothing. If Afriex then refuses the payment, the plugin asks again with the bank
-option restored and says so in your log.
+**To narrow what shoppers are offered on Afriex's page**, use **Settings →
+Afriex** in the admin: tick the options to offer, and choose whether to hide
+Afriex's own bank transfer in regions where you already offer the plugin's. The
+same settings are `POST /admin/afriex/settings` with `checkout_channels` and
+`hide_bank_channel_where_bank_transfer`. The bank option is only hidden where
+the currency can be paid another way (mobile money in Kenya, not in Nigeria),
+so a shopper is never left with nothing; if Afriex still refuses, the plugin
+asks again with the bank option restored and says so in your log.
 
 What the order page can read from `session.data`: `stage` (`"selected"` or
 `"open"`), `checkoutUrl`, `expiresAtEstimate`, `currentStatus`,
 `failureReason.message` after a failed attempt, and `paidChannel` once paid.
 
 The plugin ignores everything your storefront puts in `data` except
-`return_url`. That is a return URL for this payment, and it is accepted only on
-the origin of `returnUrl` or one listed in `allowedReturnOrigins`.
+`return_url` — a return URL for this payment, accepted only on the origin of
+`returnUrl` or one listed in `allowedReturnOrigins` — and, in staging,
+`sandbox` (see [Testing](#testing)).
 
 **Refusals** come back as `{ code, message }`. Branch on the code:
 
@@ -682,9 +686,12 @@ needs a human ends up there.
 
 Medusa's own **Mark as paid** cannot settle these orders: it only works on a
 payment collection nobody has started paying, and these ones are _awaiting_.
-The plugin adds two admin API routes instead. Call them as an admin user (a
-session cookie, a bearer token, or a secret API key). Each log line gives you the
-ids to use.
+Instead, the Afriex card on the order page offers **Accept as payment**, **Mark
+for refund** and **Apply to this order**, each asking for confirmation and
+saying what it will do; Settings → Afriex lists every order that needs one of
+them. The same actions are two admin API routes, for scripts. Call them as an
+admin user (a session cookie, a bearer token, or a secret API key). Each log
+line gives you the ids to use.
 
 **A deposit held on its session** (`AMOUNT_MISMATCH`, `COLLECTION_AMOUNT_CHANGED`,
 `SETTLED_AFTER_CANCEL`):
@@ -733,7 +740,7 @@ with a `code` and a plain-language `message`.
 | Order stays unpaid, and the log says an event _arrived on Medusa's generic /hooks/payment endpoint_ | Medusa's generic webhook URL was registered with Afriex instead of the plugin's | Replace it with `https://your-server/afriex/webhook`, as in Step 6. Events sent to the wrong URL were refused, not queued, so check those orders by hand. |
 | Order stays unpaid and no webhook arrives                                                 | Afriex cannot reach your server, or the URL was saved in the other environment's dashboard                                                                           | Re-check Step 6. Test with level 1 under [Testing](#testing).                                                                   |
 | Afriex is missing from the region's provider list                                         | The provider did not load                                                                                                                                            | Check Step 4 and the server's startup log.                                                                                      |
-| A method is not offered at checkout                                                       | It is not turned on for the cart's region                                                                                                                            | Turn it on in the region's **Afriex payment methods** card (Step 5).                                                            |
+| A method is not offered at checkout | It is not turned on for the cart's region, or Afriex cannot collect the region's currency that way | Turn it on in the region's **Afriex payment methods** card (Step 5); the card says if Afriex cannot collect the currency. |
 | Choosing Afriex Checkout fails with `AFRIEX_CHECKOUT_NOT_CONFIGURED`                      | `checkout.returnUrl` is not set                                                                                                                                      | Set it (Steps 3 and 4) and restart.                                                                                             |
 | "Pay now" always fails with `AFRIEX_CHECKOUT_TEMPORARILY_UNAVAILABLE`                     | Afriex answered `401`: a wrong key, or a key without permission to create checkout sessions. Or Afriex is unreachable                                                | The Medusa log says which. Check the key's permissions (Step 1).                                                                |
 | "Pay now" fails with `AFRIEX_CHECKOUT_NOT_CONFIGURED` although `returnUrl` is set         | Afriex answered `403` or `404`: the endpoint is not there for your store                                                                                             | Update the plugin and `@afriex/sdk`, and check with Afriex that your account can create checkout sessions. Turn the method off meanwhile. |
@@ -750,8 +757,9 @@ with a `code` and a plain-language `message`.
   `2500000`). Confirm both with one small real order before going live.
 - **No card payments yet.** Afriex Checkout offers mobile money and bank
   transfer. The Afriex SDK does not accept `CARD` yet, so the plugin does not send it.
-- **A checkout link's expiry is estimated.** Afriex does not say when a link
-  expires in its reply, so the plugin assumes 15 minutes.
+- **A checkout link's expiry is estimated at first.** Afriex does not say when
+  a link expires in its reply, so the plugin assumes 15 minutes until Afriex's
+  `CHECKOUT_SESSION.CREATED` webhook reports the real time.
 
 ## Going live
 
@@ -779,13 +787,13 @@ with a `code` and a plain-language `message`.
 | Piece            | What it is                                                                  |
 | ---------------- | --------------------------------------------------------------------------- |
 | Payment providers | `pp_afriex_afriex` (bank transfer) and `pp_afriex-checkout_afriex` (Afriex Checkout), each turned on per region |
-| API route        | `POST /afriex/webhook`                                                      |
+| API routes       | `POST /afriex/webhook`; `GET /store/afriex/methods` (what to offer in a region) |
 | Middleware       | On `POST /store/payment-collections/:id/payment-sessions` and its admin twin: stops a payment in progress being replaced, and builds Afriex Checkout's request on the server |
-| Admin API routes | `GET` and `POST /admin/afriex/regions/:id/methods`, `GET` and `POST /admin/afriex/settings`, `POST /admin/afriex/sessions/:id/resolve`, `POST /admin/afriex/references/:reference/apply` |
+| Admin API routes | `GET /admin/afriex/overview`, `GET` and `POST /admin/afriex/regions/:id/methods`, `POST /admin/afriex/methods/:method/everywhere`, `GET` and `POST /admin/afriex/settings`, `GET /admin/afriex/orders/:id/payment`, `POST /admin/afriex/sessions/:id/resolve`, `POST /admin/afriex/references/:reference/apply` |
 | Database tables  | `afriex_processed_webhook` (each webhook is handled once), `afriex_payment_reference` (every account and link handed out), `afriex_settlement` (one capture per order), `afriex_setting` (your store-wide choices) |
 | Subscriber       | Records each account and payment link the providers hand out                |
 | Scheduled job    | Nightly at 03:00, removes processed-webhook rows older than 90 days         |
-| Admin widgets    | On the order details page, and on the region details page                   |
+| Admin screens    | Settings → Afriex; a card on the order details page; a card on the region details page |
 
 No Redis and no extra services. Everything lives in your Medusa database.
 
