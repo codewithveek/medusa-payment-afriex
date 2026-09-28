@@ -77,5 +77,5 @@ export function stripSandboxHint(reference: string): string {
   if (at <= 0) {
     return reference
   }
-  return /^[A-Z_]+$/.test(reference.slice(at + SEPARATOR.length)) ? reference.slice(0, at) : reference
+  return /^[A-Za-z_]+$/.test(reference.slice(at + SEPARATOR.length)) ? reference.slice(0, at) : reference
 }

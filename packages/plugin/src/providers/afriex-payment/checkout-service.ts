@@ -50,8 +50,10 @@ import type {
 import { AfriexProviderBase, type InjectedDependencies } from "./base"
 
 /**
- * How long a checkout link is assumed to stay payable until Afriex says. The
- * docs give no lifetime; their sample event puts one at about fifteen minutes.
+ * How long a checkout link is assumed to stay payable until Afriex says — which
+ * it does within seconds, in `CHECKOUT_SESSION.CREATED` (30 minutes, observed
+ * in staging). Kept short on purpose: until that event lands, a shorter guess
+ * lets a shopper replace a link sooner rather than later.
  */
 const ASSUMED_LINK_LIFETIME_MS = 15 * 60 * 1000
 

@@ -37,10 +37,12 @@ Afriex Checkout end-to-end run against a Medusa store
   --provider <id>          Checkout provider id.             Default: pp_afriex-checkout_afriex
   --stop-after-select      Stop once the order is placed, before asking Afriex for a link.
 
-Staging only — Afriex's sandbox settles the payment by itself:
-  --sandbox success|fail   The outcome Afriex should settle with.
-  --instant                Settle in about 30 seconds instead of 5–6 minutes.
+Staging only — Afriex's sandbox settles a mobile-money payment made on the hosted page:
+  --sandbox success|fail   The outcome Afriex should settle with. (Afriex documents "fail";
+                           on 2026-09-28 its sandbox still settled such payments as success.)
+  --instant                Settle in about 30 seconds instead of 5–6 minutes. This one works.
   --otp yes|no             Ask for the sandbox one-time password on the hosted page, or never.
+                           (Not honoured by the hosted page on 2026-09-28.)
   --afriex-api-key <key>   With --otp yes: enter the sandbox OTP (123456) for the shopper,
                            through Afriex's API, once the payment asks for it.
   --wait <seconds>         How long to watch the order for the webhook.  Default: 420 with --sandbox
@@ -232,7 +234,9 @@ if (!waitSeconds) {
 const orderId = completed.order.id
 const wanted = sandbox?.outcome === "fail" ? "FAILED" : "SUCCESS"
 const PAID = ["authorized", "captured", "completed"]
-console.log(`\n  Watching order #${completed.order.display_id} for up to ${waitSeconds}s, expecting ${wanted}…`)
+console.log(`\n  Now pay on the link above, by mobile money — in staging that is the only option that settles;`)
+console.log(`  the sandbox's bank account never does. Any name and local number will do.`)
+console.log(`  Watching order #${completed.order.display_id} for up to ${waitSeconds}s, expecting ${wanted}…`)
 
 let last = ""
 let otpEntered = false

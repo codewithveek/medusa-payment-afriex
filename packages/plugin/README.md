@@ -483,23 +483,28 @@ checkout order through your store's API: choose the method, place the order,
 ask for the link. See
 [Testing without real money](https://github.com/codewithveek/medusa-payment-afriex#testing-without-real-money).
 
-**3. Afriex Checkout, end to end in staging.** Afriex's sandbox settles a
-checkout payment by itself — usually within 5–6 minutes — and lets the
-`merchantReference` choose how. The plugin exposes that: send
-`data: { sandbox: { outcome: "fail", instant: true } }` with the pay call (or
-`outcome: "success"`, and `otp: true` to have the hosted page ask for the
-sandbox one-time password, `123456`), and the plugin adds Afriex's control
-words to the reference it sends, then strips them from the webhook, so the
-order is matched as always. Only a store running against staging listens;
-production ignores it.
+**3. Afriex Checkout, end to end in staging.** Pay on Afriex's hosted page by
+mobile money (any name and local number), and Afriex's sandbox settles it by
+itself — usually within 5–6 minutes — sending the same webhooks as a real
+payment. The sandbox's bank account is shown but never settles: virtual
+accounts exist in production only. The `merchantReference` can speed this up:
+send `data: { sandbox: { instant: true } }` with the pay call and the plugin
+adds Afriex's `SIMULATE_INSTANT` to the reference, then strips it from the
+webhook, so the order is matched as always; settlement then takes about 30
+seconds. Afriex also documents `fail` (a FAILED outcome) and `SIMULATE_OTP`
+(the one-time password step), which the plugin sends for `outcome: "fail"` and
+`otp: true`; on 2026-09-28 its sandbox settled those as plain successes, so
+until Afriex confirms them, test failures with the simulator (level 2). Only a
+store running against staging listens; production ignores the request.
 
 ```bash
-pnpm checkout:e2e --publishable-key pk_… --sandbox fail --instant
-pnpm checkout:e2e --publishable-key pk_… --sandbox success --instant --otp yes --afriex-api-key $AFRIEX_API_KEY
+pnpm checkout:e2e --publishable-key pk_… --country ke --phone +254712345678 --sandbox success --instant
 ```
 
 The script places the order, asks for the link, and watches the order until
-Afriex's webhook has moved it. For that webhook to arrive, your Medusa server's
+Afriex's webhook has moved it; you pay on the link meanwhile. Choose a region
+whose currency Afriex collects by mobile money — Kenya, not Nigeria — or the
+page offers only the bank account, which never settles in staging. For that webhook to arrive, your Medusa server's
 `/afriex/webhook` must be reachable from the internet (a tunnel will do), be
 the URL registered in the Afriex dashboard, and the store must hold staging's
 webhook public key. Bank transfer cannot be tested this way: Afriex opens
