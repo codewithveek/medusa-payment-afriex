@@ -44,6 +44,8 @@ reconcile by hand.
   method works in, in every country Afriex serves, and says why one does not.
 - **Safe to retry.** Afriex redelivers webhooks. Each event is processed once.
 
+<p><img src="https://raw.githubusercontent.com/codewithveek/medusa-payment-afriex/main/packages/plugin/assets/admin-settings.png" alt="Settings → Afriex in the Medusa admin: setup checks, and a warning for each region where a method is on but Afriex cannot collect its currency" width="100%"><br><sub>Settings → Afriex: setup checks, and a warning wherever a method is on but Afriex cannot collect the region's currency.</sub></p>
+
 ## How it works
 
 **Bank transfer**
@@ -221,6 +223,8 @@ switch per method:
 | Bank transfer   | `pp_afriex_afriex`          |
 | Afriex Checkout | `pp_afriex-checkout_afriex` |
 
+<p><img src="https://raw.githubusercontent.com/codewithveek/medusa-payment-afriex/main/packages/plugin/assets/admin-region.png" alt="The Afriex payment methods card on a region page, with a switch per method" width="100%"><br><sub>The card on a region's page. In Kenya, it says what Afriex's page will offer.</sub></p>
+
 Medusa's own **⋯ → Edit → Payment Providers** field changes the same setting,
 under those ids. The card also says what each method is, whether Afriex can
 collect the region's currency that way (and why not), and before turning one
@@ -268,6 +272,8 @@ This uses the [Medusa JS SDK](https://docs.medusajs.com/resources/js-sdk). Wire
 up the methods you turned on. In the samples, `sdk` is your Medusa client,
 `cart` the shopper's cart, and `MEDUSA_BACKEND_URL` and `MEDUSA_PUBLISHABLE_KEY`
 your server's address and publishable key.
+
+<p><img src="https://raw.githubusercontent.com/codewithveek/medusa-payment-afriex/main/packages/plugin/assets/storefront.png" alt="The example storefront: the payment method picker at checkout, and the order page showing the bank account to pay into" width="100%"><br><sub>The example storefront: choosing how to pay, and the order page waiting for a bank transfer.</sub></p>
 
 **Which methods to show.** Ask the plugin, not Medusa's provider list: a method
 can be turned on in a region whose currency Afriex cannot collect, and the
@@ -697,6 +703,8 @@ saying what it will do; Settings → Afriex lists every order that needs one of
 them. The same actions are two admin API routes, for scripts. Call them as an
 admin user (a session cookie, a bearer token, or a secret API key). Each log
 line gives you the ids to use.
+
+<p><img src="https://raw.githubusercontent.com/codewithveek/medusa-payment-afriex/main/packages/plugin/assets/admin-order-underpaid.png" alt="The Afriex card on an order page showing an underpayment, with Accept as payment and Mark for refund buttons" width="100%"><br><sub>An underpaid order: what arrived against what was expected, and the two ways to settle it.</sub></p>
 
 **A deposit held on its session** (`AMOUNT_MISMATCH`, `COLLECTION_AMOUNT_CHANGED`,
 `SETTLED_AFTER_CANCEL`):

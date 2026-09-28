@@ -50,6 +50,8 @@ the plugin exactly the way an installing project would, and they are never publi
 
 ## Run the example store
 
+<p><img src="./packages/plugin/assets/storefront-paid.png" alt="The example storefront: the payment method picker, and an order marked paid after Afriex's webhook" width="100%"><br><sub>What the example gives you: a checkout that offers each Afriex method, and an order that turns paid when Afriex's webhook lands.</sub></p>
+
 From a fresh clone to a storefront you can check out in.
 
 **1. Install and build the plugin.** Medusa loads the plugin from its built
