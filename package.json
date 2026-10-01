@@ -3,6 +3,10 @@
   "private": true,
   "description": "Monorepo for the Afriex Medusa payment provider and its example apps.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Afri-exchange/medusa-payment-afriex.git"
+  },
   "packageManager": "pnpm@10.32.1",
   "engines": {
     "node": ">=20.19"

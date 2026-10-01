@@ -2,7 +2,7 @@
 
 Get paid in your Medusa store with [Afriex](https://www.afriex.com), two ways.
 
-<p><img src="https://raw.githubusercontent.com/codewithveek/medusa-payment-afriex/main/packages/plugin/medusa-afriex-plugin.png" alt="Medusa Afriex payment plugin" width="100%"></p>
+<p><img src="https://raw.githubusercontent.com/Afri-exchange/medusa-payment-afriex/main/packages/plugin/medusa-afriex-plugin.png" alt="Medusa Afriex payment plugin" width="100%"></p>
 
 - **Bank transfer.** The shopper gets a bank account number to pay into, right
   in your checkout.
@@ -15,8 +15,8 @@ reconcile by hand.
 
 [Afriex API docs](https://docs.afriex.com) ·
 [Medusa payment docs](https://docs.medusajs.com/resources/commerce-modules/payment) ·
-[Example store and storefront](https://github.com/codewithveek/medusa-payment-afriex/tree/main/examples) ·
-[Report an issue](https://github.com/codewithveek/medusa-payment-afriex/issues)
+[Example store and storefront](https://github.com/Afri-exchange/medusa-payment-afriex/tree/main/examples) ·
+[Report an issue](https://github.com/Afri-exchange/medusa-payment-afriex/issues)
 
 ## What you get
 
@@ -44,7 +44,7 @@ reconcile by hand.
   method works in, in every country Afriex serves, and says why one does not.
 - **Safe to retry.** Afriex redelivers webhooks. Each event is processed once.
 
-<p><img src="https://raw.githubusercontent.com/codewithveek/medusa-payment-afriex/main/packages/plugin/assets/admin-settings.png" alt="Settings → Afriex in the Medusa admin: setup checks, and a warning for each region where a method is on but Afriex cannot collect its currency" width="100%"><br><sub>Settings → Afriex: setup checks, and a warning wherever a method is on but Afriex cannot collect the region's currency.</sub></p>
+<p><img src="https://raw.githubusercontent.com/Afri-exchange/medusa-payment-afriex/main/packages/plugin/assets/admin-settings.png" alt="Settings → Afriex in the Medusa admin: setup checks, and a warning for each region where a method is on but Afriex cannot collect its currency" width="100%"><br><sub>Settings → Afriex: setup checks, and a warning wherever a method is on but Afriex cannot collect the region's currency.</sub></p>
 
 ## How it works
 
@@ -223,7 +223,7 @@ switch per method:
 | Bank transfer   | `pp_afriex_afriex`          |
 | Afriex Checkout | `pp_afriex-checkout_afriex` |
 
-<p><img src="https://raw.githubusercontent.com/codewithveek/medusa-payment-afriex/main/packages/plugin/assets/admin-region.png" alt="The Afriex payment methods card on a region page, with a switch per method" width="100%"><br><sub>The card on a region's page. In Kenya, it says what Afriex's page will offer.</sub></p>
+<p><img src="https://raw.githubusercontent.com/Afri-exchange/medusa-payment-afriex/main/packages/plugin/assets/admin-region.png" alt="The Afriex payment methods card on a region page, with a switch per method" width="100%"><br><sub>The card on a region's page. In Kenya, it says what Afriex's page will offer.</sub></p>
 
 Medusa's own **⋯ → Edit → Payment Providers** field changes the same setting,
 under those ids. The card also says what each method is, whether Afriex can
@@ -273,7 +273,7 @@ up the methods you turned on. In the samples, `sdk` is your Medusa client,
 `cart` the shopper's cart, and `MEDUSA_BACKEND_URL` and `MEDUSA_PUBLISHABLE_KEY`
 your server's address and publishable key.
 
-<p><img src="https://raw.githubusercontent.com/codewithveek/medusa-payment-afriex/main/packages/plugin/assets/storefront.png" alt="The example storefront: the payment method picker at checkout, and the order page showing the bank account to pay into" width="100%"><br><sub>The example storefront: choosing how to pay, and the order page waiting for a bank transfer.</sub></p>
+<p><img src="https://raw.githubusercontent.com/Afri-exchange/medusa-payment-afriex/main/packages/plugin/assets/storefront.png" alt="The example storefront: the payment method picker at checkout, and the order page showing the bank account to pay into" width="100%"><br><sub>The example storefront: choosing how to pay, and the order page waiting for a bank transfer.</sub></p>
 
 **Which methods to show.** Ask the plugin, not Medusa's provider list: a method
 can be turned on in a region whose currency Afriex cannot collect, and the
@@ -345,7 +345,7 @@ paid. Only Afriex's webhook can.
 payment, and that order turning paid a few moments after the transfer lands.
 
 A complete working version of this is in
-[`examples/storefront`](https://github.com/codewithveek/medusa-payment-afriex/tree/main/examples/storefront).
+[`examples/storefront`](https://github.com/Afri-exchange/medusa-payment-afriex/tree/main/examples/storefront).
 
 #### 7b. Afriex Checkout
 
@@ -487,7 +487,7 @@ pay, underpay, and double-pay an order on your own machine, by bank transfer or
 through Afriex Checkout (`--channel MOBILE_MONEY`). A second script walks a
 checkout order through your store's API: choose the method, place the order,
 ask for the link. See
-[Testing without real money](https://github.com/codewithveek/medusa-payment-afriex#testing-without-real-money).
+[Testing without real money](https://github.com/Afri-exchange/medusa-payment-afriex#testing-without-real-money).
 
 **3. Afriex Checkout, end to end in staging.** Pay on Afriex's hosted page by
 mobile money (any name and local number), and Afriex's sandbox settles it by
@@ -704,7 +704,7 @@ them. The same actions are two admin API routes, for scripts. Call them as an
 admin user (a session cookie, a bearer token, or a secret API key). Each log
 line gives you the ids to use.
 
-<p><img src="https://raw.githubusercontent.com/codewithveek/medusa-payment-afriex/main/packages/plugin/assets/admin-order-underpaid.png" alt="The Afriex card on an order page showing an underpayment, with Accept as payment and Mark for refund buttons" width="100%"><br><sub>An underpaid order: what arrived against what was expected, and the two ways to settle it.</sub></p>
+<p><img src="https://raw.githubusercontent.com/Afri-exchange/medusa-payment-afriex/main/packages/plugin/assets/admin-order-underpaid.png" alt="The Afriex card on an order page showing an underpayment, with Accept as payment and Mark for refund buttons" width="100%"><br><sub>An underpaid order: what arrived against what was expected, and the two ways to settle it.</sub></p>
 
 **A deposit held on its session** (`AMOUNT_MISMATCH`, `COLLECTION_AMOUNT_CHANGED`,
 `SETTLED_AFTER_CANCEL`):
@@ -812,8 +812,8 @@ No Redis and no extra services. Everything lives in your Medusa database.
 
 ## Contributing and support
 
-Bugs and requests: [open an issue](https://github.com/codewithveek/medusa-payment-afriex/issues).
-To work on the plugin, the [repository README](https://github.com/codewithveek/medusa-payment-afriex#readme)
+Bugs and requests: [open an issue](https://github.com/Afri-exchange/medusa-payment-afriex/issues).
+To work on the plugin, the [repository README](https://github.com/Afri-exchange/medusa-payment-afriex#readme)
 covers running the example store, the tests, and the webhook simulator.
 
 Built on [`@afriex/sdk`](https://www.npmjs.com/package/@afriex/sdk).

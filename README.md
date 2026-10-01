@@ -288,7 +288,7 @@ and check what will ship with `npm pack --dry-run` in `packages/plugin`.
 ## Contributing
 
 Issues and pull requests are welcome at
-[github.com/codewithveek/medusa-payment-afriex](https://github.com/codewithveek/medusa-payment-afriex/issues).
+[github.com/Afri-exchange/medusa-payment-afriex](https://github.com/Afri-exchange/medusa-payment-afriex/issues).
 For a bug in payment handling, the most useful report includes the Afriex
 transaction status, the outcome the webhook returned, and the matching
 error-level log line.
